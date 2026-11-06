@@ -49,12 +49,19 @@
 #define RTC1_CC0               REG(0x40011540)
 #define RTC1_IRQn              17
 
+#define WDT_TASKS_START        REG(0x40010000)
+#define WDT_CRV                REG(0x40010504)
+#define WDT_RREN               REG(0x40010508)
+#define WDT_CONFIG             REG(0x4001050C)
+#define WDT_RR0                REG(0x40010600)
+#define WDT_RELOAD             0x6E524635u
+
 #define GPIO_OUTSET            REG(0x50000508)
 #define GPIO_OUTCLR            REG(0x5000050C)
 #define GPIO_IN                REG(0x50000510)
 #define PIN_CNF(n)             REG(0x50000700 + 4 * (n))
 
-#define FICR_OVERRIDEEN        REG(0x100000A0)
+#define FICR_OVERRIDEEN        REG(0x100000AC)
 #define FICR_DEVICEADDR(n)     REG(0x100000A4 + 4 * (n))
 #define FICR_BLE_1MBIT(n)      REG(0x100000EC + 4 * (n))
 

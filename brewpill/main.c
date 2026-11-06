@@ -49,6 +49,7 @@ static const struct config *cfg;
 /* ---- Clocks and sleep ------------------------------------------------- */
 
 /* RTC1 ticks at 32768 / 33 ≈ 993 Hz, close enough to milliseconds */
+#define LFCLK_HZ      32768u
 #define RTC_PRESCALER 32
 
 static void lfclk_start(void)
@@ -71,16 +72,42 @@ static void lfclk_start(void)
     RTC1_TASKS_START = 1;
 }
 
-static void sleep_ms(uint32_t ms)
+/*
+ * Clear COMPARE0 and the RTC1 pending bit. Clearing an event takes a few
+ * cycles to reach the interrupt line, so read it back first; otherwise the
+ * still-asserted line re-pends the IRQ, and with the bit stuck SEVONPEND
+ * never fires again (it only signals on the not-pending -> pending edge).
+ */
+static void rtc_clear(void)
 {
-    uint32_t ticks = ms * 32768u / ((RTC_PRESCALER + 1) * 1000u);
-    if (ticks < 2) ticks = 2;
     RTC1_EVENTS_COMPARE0 = 0;
-    RTC1_CC0 = (RTC1_COUNTER + ticks) & 0xFFFFFF;
-    while (!RTC1_EVENTS_COMPARE0) wfe();
-    RTC1_EVENTS_COMPARE0 = 0;
+    (void)RTC1_EVENTS_COMPARE0;
     NVIC_ICPR = 1u << RTC1_IRQn;
 }
+
+static void sleep_ms(uint32_t ms)
+{
+    uint32_t ticks = ms * LFCLK_HZ / ((RTC_PRESCALER + 1) * 1000u);
+    if (ticks < 2) ticks = 2;
+    rtc_clear();                              /* before arming, so the edge is guaranteed */
+    RTC1_CC0 = (RTC1_COUNTER + ticks) & 0xFFFFFF;
+    while (!RTC1_EVENTS_COMPARE0) wfe();
+    rtc_clear();
+}
+
+/*
+ * Reset if a loop iteration stalls (a clock that never starts, a lost
+ * wake-up, a fault): the pill is sealed, so rebooting is the only recovery.
+ */
+static void watchdog_start(uint32_t timeout_ms)
+{
+    WDT_CONFIG = 1;                           /* run in sleep, pause on halt */
+    WDT_CRV = timeout_ms * LFCLK_HZ / 1000u;
+    WDT_RREN = 1;
+    WDT_TASKS_START = 1;
+}
+
+static void watchdog_feed(void) { WDT_RR0 = WDT_RELOAD; }
 
 static void hfxo(int on)
 {
@@ -211,7 +238,9 @@ static void broadcast(void)
     uint8_t buf[31];
     hfxo(1);
     radio_advertise(buf, brewpill_packet(buf));
-    if (cfg->tilt_color >= 1 && cfg->tilt_color <= 8)
+    /* Tilt receivers can't see the status flags, so only send gravity that
+     * is both current and calibrated rather than 0, stale or placeholder SG */
+    if (cfg->tilt_color >= 1 && cfg->tilt_color <= 8 && S.accel_ok && S.calibrated)
         radio_advertise(buf, tilt_packet(buf));
     hfxo(0);
     S.broadcasts++;
@@ -232,7 +261,11 @@ int main(void)
     uint32_t every = cfg->measure_s * 1000u / adv_ms;
     if (!every) every = 1;
 
+    /* One iteration is a measurement (< 1 s), a broadcast and adv_ms of sleep; 10 s slack */
+    watchdog_start(adv_ms + 10000);
+
     for (uint32_t i = 0;; i++) {
+        watchdog_feed();
         if (i % every == 0) measure();
         broadcast();
         sleep_ms(adv_ms);

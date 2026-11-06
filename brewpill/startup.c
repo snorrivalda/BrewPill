@@ -14,7 +14,8 @@ void Reset_Handler(void)
 
 static void Default_Handler(void) { for (;;); }
 
-/* Only the core exceptions; this test uses no interrupts */
+/* Only the core exceptions: RTC1 only pends (to wake WFE), it is never enabled.
+ * A fault spins in Default_Handler until the watchdog resets the chip. */
 __attribute__((section(".vectors"), used))
 static void (*const vectors[16])(void) = {
     (void (*)(void))&_estack, Reset_Handler,
