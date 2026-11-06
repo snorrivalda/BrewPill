@@ -333,6 +333,21 @@ static void handleSave() {
     ESP.restart();
 }
 
+/* One serial line per pill each minute, so reception can be checked over USB */
+static void logPills() {
+    std::map<String, Pill> snap;
+    LOCK();
+    snap = pills;
+    UNLOCK();
+    if (snap.empty()) { Serial.println("No BrewPill heard yet"); return; }
+    for (auto &kv : snap) {
+        const Pill &p = kv.second;
+        Serial.printf("%s-%s  SG %.4f  %.1f C  tilt %.1f  %.2f V  %d dBm  %lus ago\n",
+                      cfg.name.c_str(), shortId(kv.first).c_str(), p.sg, p.temp, p.tilt,
+                      p.vdd / 1000.0f, p.rssi, (unsigned long)((millis() - p.seen) / 1000));
+    }
+}
+
 // ---------- main ----------
 
 void setup() {
@@ -369,6 +384,12 @@ void loop() {
     if (millis() - lastForward > 5000) {
         lastForward = millis();
         forward();
+    }
+
+    static uint32_t lastLog = 0;
+    if (millis() - lastLog > 60000 || !lastLog) {
+        lastLog = millis();
+        logPills();
     }
     delay(2);
 }
