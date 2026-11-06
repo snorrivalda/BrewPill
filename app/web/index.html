@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrewPill</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f3f0;
+  --surface-1: #fcfcfb;
+  --border: #e3e2dd;
+  --grid: #ecebe7;
+  --axis: #c9c8c2;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --accent: #2a78d6;
+  --series-sg: #2a78d6;
+  --series-temp: #eb6834;
+  --good: #1a7f37;
+  --warning: #9a6700;
+  --critical: #c62828;
+  --field: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211;
+    --surface-1: #1a1a19;
+    --border: #2e2e2c;
+    --grid: #262624;
+    --axis: #45443f;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --accent: #3987e5;
+    --series-sg: #3987e5;
+    --series-temp: #d95926;
+    --good: #4ac26b;
+    --warning: #d4a72c;
+    --critical: #ef6b6b;
+    --field: #222220;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface-1: #1a1a19; --border: #2e2e2c; --grid: #262624; --axis: #45443f;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86; --accent: #3987e5;
+  --series-sg: #3987e5; --series-temp: #d95926; --good: #4ac26b; --warning: #d4a72c;
+  --critical: #ef6b6b; --field: #222220;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text-primary);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--surface-1);
+  position: sticky; top: 0; z-index: 5;
+}
+header h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+nav { display: flex; gap: 4px; }
+nav button { border: 0; background: none; color: var(--text-secondary); padding: 6px 12px; border-radius: 6px; font: inherit; cursor: pointer; }
+nav button[aria-selected="true"] { background: var(--bg); color: var(--text-primary); font-weight: 600; }
+.conn { margin-left: auto; color: var(--text-secondary); font-size: 13px; display: flex; gap: 10px; align-items: center; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--text-muted); }
+.dot.ok { background: var(--good); } .dot.stale { background: var(--warning); } .dot.off { background: var(--critical); }
+main { padding: 20px 24px 48px; max-width: 1200px; margin: 0 auto; }
+.panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+.panel h2 { font-size: 14px; margin: 0 0 4px; }
+.panel p.hint { margin: 0 0 12px; color: var(--text-secondary); font-size: 13px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .label { color: var(--text-secondary); font-size: 12px; }
+.tile .value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.tile.hero .value { font-size: 34px; }
+.tile .sub { color: var(--text-muted); font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+button.btn, select, input {
+  font: inherit; color: var(--text-primary); background: var(--field);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+}
+button.btn { cursor: pointer; }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.btn:disabled { opacity: 0.5; cursor: default; }
+input[type=number] { width: 100px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: var(--field); color: var(--text-secondary); padding: 5px 10px; font: inherit; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--bg); color: var(--text-primary); font-weight: 600; }
+.charts { position: relative; }
+.chart-title { font-size: 13px; font-weight: 600; margin: 14px 0 2px; color: var(--text-primary); }
+.chart-title span { font-weight: 400; color: var(--text-muted); }
+svg text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tooltip {
+  position: absolute; pointer-events: none; display: none; z-index: 3;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); white-space: nowrap;
+}
+.tooltip .when { color: var(--text-secondary); margin-bottom: 4px; }
+.tooltip .tt-row { display: flex; align-items: center; gap: 8px; }
+.tooltip .key { width: 12px; height: 2px; border-radius: 1px; }
+.tooltip strong { font-variant-numeric: tabular-nums; }
+.tooltip .name { color: var(--text-secondary); }
+.empty { color: var(--text-secondary); padding: 40px 0; text-align: center; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--border); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-secondary); font-weight: 500; }
+.scroll { max-height: 320px; overflow: auto; }
+.axes { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 10px; }
+.axes label { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; display: block; }
+.axes label:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.axes .big { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+pre.out { background: var(--bg); border-radius: 6px; padding: 10px; font-size: 11px; max-height: 180px; overflow: auto; white-space: pre-wrap; }
+.badge { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--text-secondary); }
+.warn { color: var(--warning); }
+dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); color: var(--text-primary); padding: 18px; min-width: 320px; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog label { display: block; margin: 8px 0 2px; color: var(--text-secondary); font-size: 13px; }
+dialog input { width: 100%; }
+a { color: var(--accent); }
+@media (max-width: 600px) { header, main { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>BrewPill</h1>
+  <nav role="tablist">
+    <button role="tab" data-tab="ferment" aria-selected="true">Fermentation</button>
+    <button role="tab" data-tab="calibrate" aria-selected="false">Calibrate</button>
+  </nav>
+  <div class="conn">
+    <select id="devicePick" hidden></select>
+    <span class="dot" id="connDot"></span><span id="connText">Connecting…</span>
+  </div>
+</header>
+
+<main>
+  <!-- ============ Fermentation ============ -->
+  <section id="tab-ferment">
+    <div class="tiles">
+      <div class="tile hero"><div class="label">Gravity</div><div class="value" id="tSG">–</div><div class="sub" id="tSGsub"></div></div>
+      <div class="tile"><div class="label">Temperature</div><div class="value" id="tTemp">–</div><div class="sub" id="tTempSub"></div></div>
+      <div class="tile"><div class="label">ABV (est.)</div><div class="value" id="tABV">–</div><div class="sub" id="tABVsub"></div></div>
+      <div class="tile"><div class="label">24 h change</div><div class="value" id="tRate">–</div><div class="sub" id="tRateSub"></div></div>
+      <div class="tile"><div class="label">Pill</div><div class="value" id="tTilt">–</div><div class="sub" id="tPill"></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <select id="brewPick" aria-label="Brew"></select>
+        <button class="btn" id="newBrew">New brew</button>
+        <button class="btn" id="editBrew">Edit</button>
+        <button class="btn" id="endBrew">End brew</button>
+        <span class="spacer"></span>
+        <div class="seg" id="rangeSeg" role="group" aria-label="Time range">
+          <button data-range="86400">24 h</button>
+          <button data-range="172800">48 h</button>
+          <button data-range="604800">7 d</button>
+          <button data-range="0" aria-pressed="true">All</button>
+        </div>
+        <button class="btn" id="tableToggle">Table</button>
+        <a class="btn" id="exportCsv" href="/api/readings.csv" download="brewpill-readings.csv" style="text-decoration:none;padding:5px 10px;border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">Export CSV</a>
+      </div>
+      <div class="charts" id="charts">
+        <div class="chart-title">Specific gravity <span id="sgNote"></span></div>
+        <div id="chartSG"></div>
+        <div class="chart-title">Temperature <span>°C</span></div>
+        <div id="chartTemp"></div>
+        <div class="tooltip" id="tooltip"></div>
+      </div>
+      <div id="tableWrap" class="scroll" hidden></div>
+    </div>
+  </section>
+
+  <!-- ============ Calibrate ============ -->
+  <section id="tab-calibrate" hidden>
+    <div class="panel">
+      <h2>1 · Capsule axis</h2>
+      <p class="hint">Pick the board axis that runs along the length of your capsule. Tip the capsule from upright to lying flat: the right axis goes from about 0° to about 90°.</p>
+      <div class="axes" id="axes"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h2>2 · Calibration points</h2>
+        <p class="hint">Float the pill in water and in 2–5 sugar solutions whose gravity you've measured with a hydrometer (SG) or refractometer (°Brix). Wait until the tilt settles (about 5 minutes; readings arrive once a minute), then add a point.</p>
+        <div class="row" style="margin-bottom:10px">
+          <span>Tilt now: <strong id="calTilt">–</strong> <span class="badge" id="calSpread"></span></span>
+        </div>
+        <div class="row" style="margin-bottom:6px">
+          <label for="calSG">Measured</label>
+          <input type="number" id="calSG" step="0.001" placeholder="1.000">
+          <select id="calUnit" aria-label="Unit">
+            <option value="sg">SG</option>
+            <option value="brix">°Brix</option>
+          </select>
+          <span id="wcfWrap" class="row" hidden>
+            <label for="wcf" title="Wort correction factor: 1.00 for sugar water, about 1.04 for wort">WCF</label>
+            <input type="number" id="wcf" step="0.01" min="0.9" max="1.2" value="1.00" style="width:70px">
+          </span>
+          <button class="btn primary" id="addPoint">Add point</button>
+        </div>
+        <p class="hint" id="calConv" style="margin-bottom:14px">&nbsp;</p>
+        <div id="pointsTable"></div>
+        <div class="row" style="margin-top:12px">
+          <label for="degree">Curve</label>
+          <select id="degree">
+            <option value="1">Linear</option>
+            <option value="2" selected>Quadratic</option>
+            <option value="3">Cubic</option>
+          </select>
+          <span class="badge" id="fitInfo"></span>
+          <span class="spacer"></span>
+          <button class="btn primary" id="saveCal">Use this calibration</button>
+        </div>
+        <p class="hint" id="calStatus" style="margin-top:10px"></p>
+      </div>
+      <div class="panel">
+        <h2>Fit</h2>
+        <p class="hint">Measured points and the fitted curve. Hover a point to see its error.</p>
+        <div class="charts" id="calChartWrap">
+          <div id="calChart"></div>
+          <div class="tooltip" id="calTooltip"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h2>3 · Temperature</h2>
+        <p class="hint">The pill uses the nRF51's on-chip sensor, which can be a few degrees off. Enter a thermometer reading taken at the same time to correct it.</p>
+        <div class="row" style="margin-bottom:8px">Pill reads <strong id="rawTemp">–</strong>, offset <strong id="curOffset">–</strong></div>
+        <div class="row">
+          <label for="actualTemp">Actual °C</label>
+          <input type="number" id="actualTemp" step="0.1">
+          <button class="btn primary" id="setOffset">Set offset</button>
+          <button class="btn" id="clearOffset">Clear</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>4 · Write to pill <span class="badge">(optional, needs ST-Link)</span></h2>
+        <p class="hint">This app calculates gravity from the raw readings itself, so this step isn't needed for this app. Write the calibration to the pill when you also want Tilt-compatible apps to show correct gravity.</p>
+        <div class="row" style="margin-bottom:8px">
+          <label for="tiltColor">Tilt colour</label>
+          <select id="tiltColor">
+            <option value="0">Off</option><option value="1" selected>Red</option><option value="2">Green</option>
+            <option value="3">Black</option><option value="4">Purple</option><option value="5">Orange</option>
+            <option value="6">Blue</option><option value="7">Yellow</option><option value="8">Pink</option>
+          </select>
+          <label for="measureS">Read every</label>
+          <input type="number" id="measureS" value="60" min="5" max="3600" style="width:70px"> s
+        </div>
+        <div class="row">
+          <button class="btn primary" id="writePill">Write to pill</button>
+          <span class="badge" id="writeStatus"></span>
+        </div>
+        <pre class="out" id="writeOut" hidden></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="brewDialog">
+  <form method="dialog">
+    <h2 style="margin:0 0 6px;font-size:16px" id="brewDialogTitle">New brew</h2>
+    <label for="brewName">Name</label>
+    <input id="brewName" required placeholder="Pale ale #4">
+    <label for="brewOG">Original gravity (blank = first reading)</label>
+    <input id="brewOG" type="number" step="0.001" placeholder="1.050">
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const AXES = ["x", "y", "z"];
+const STALE_S = 180;
+
+let state = {};                 // persisted in the app (state.json)
+let live = null;                // latest /api/live
+let rows = [];                  // readings for the current chart range
+let range = 0;                  // seconds; 0 = whole brew
+let showTable = false;
+
+// ---------- persistence ----------
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { "X-BrewPill": "1", "Content-Type": "application/json" } });
+  if (!r.ok) throw new Error(`${path}: ${r.status}`);
+  return r.headers.get("content-type")?.includes("json") ? r.json() : r.text();
+}
+async function loadState() {
+  state = Object.assign({ axis: "x", points: [], degree: 2, poly: null, tempOffset: 0,
+                          pillTempOffset: 0, brews: [], brewId: null, device: null }, await api("/api/state"));
+}
+const saveState = () => api("/api/state", { method: "PUT", body: JSON.stringify(state) });
+
+// ---------- physics ----------
+function tiltOf(r, axis = state.axis) {
+  const g = { x: r.x, y: r.y, z: r.z };
+  const a = AXES.indexOf(axis), b = AXES[(a + 1) % 3], c = AXES[(a + 2) % 3];
+  if (!g.x && !g.y && !g.z) return r.tilt;
+  return Math.atan2(Math.hypot(g[b], g[c]), Math.abs(g[axis])) * 180 / Math.PI;
+}
+const polyEval = (p, t) => p.reduce((s, c, i) => s + c * t ** i, 0);
+const sgOf = (r) => state.poly ? polyEval(state.poly, tiltOf(r)) : r.sg;
+const tempOf = (r) => r.temp - (state.pillTempOffset || 0) + (state.tempOffset || 0);
+
+function fit(points, degree) {
+  const n = degree + 1;
+  const A = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) =>
+    points.reduce((s, p) => s + p.tilt ** (i + j), 0)));
+  const b = Array.from({ length: n }, (_, i) => points.reduce((s, p) => s + p.sg * p.tilt ** i, 0));
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
+    for (let r = c + 1; r < n; r++) {
+      const f = A[r][c] / A[c][c];
+      for (let k = c; k < n; k++) A[r][k] -= f * A[c][k];
+      b[r] -= f * b[c];
+    }
+  }
+  const x = Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let s = b[r];
+    for (let k = r + 1; k < n; k++) s -= A[r][k] * x[k];
+    x[r] = s / A[r][r];
+  }
+  return [...x, 0, 0, 0, 0].slice(0, 4);
+}
+
+// ---------- formatting ----------
+const fmtSG = (v) => v == null || isNaN(v) ? "–" : v.toFixed(3);
+const fmtT = (v) => v == null || isNaN(v) ? "–" : v.toFixed(1) + " °C";
+function ago(s) {
+  if (s < 60) return `${Math.round(s)} s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 172800) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
+const dateFmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const fullFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+// ---------- live ----------
+function currentDevice() {
+  const devs = live?.devices || [];
+  return devs.find((d) => d.device === state.device) || devs[0] || null;
+}
+
+async function pollLive() {
+  try {
+    live = await api("/api/live");
+  } catch {
+    $("connDot").className = "dot off";
+    $("connText").textContent = "App not running";
+    return;
+  }
+  const devs = live.devices;
+  const pick = $("devicePick");
+  pick.hidden = devs.length < 2;
+  if (devs.length > 1 && pick.options.length !== devs.length) {
+    pick.replaceChildren(...devs.map((d) => new Option(`Pill ${d.device.slice(0, 4)}`, d.device)));
+  }
+  if (!state.device && devs[0]) state.device = devs[0].device;
+  pick.value = state.device || "";
+
+  const d = currentDevice();
+  const dot = $("connDot"), txt = $("connText");
+  if (!d) {
+    dot.className = live.bluetooth === "scanning" ? "dot stale" : "dot off";
+    txt.textContent = live.bluetooth === "scanning" ? "Listening for BrewPill…" : live.bluetooth;
+  } else {
+    const age = live.now - d.t;
+    dot.className = age < STALE_S ? "dot ok" : "dot stale";
+    txt.textContent = age < STALE_S ? `Pill ${d.device.slice(0, 4)} · ${d.rssi} dBm` : `Last heard ${ago(age)}`;
+  }
+  renderTiles();
+  renderCalibrateLive();
+}
+
+// ---------- fermentation ----------
+function activeBrew() { return state.brews.find((b) => b.id === state.brewId) || null; }
+
+function renderBrewPick() {
+  const pick = $("brewPick");
+  const opts = [new Option("All readings (no brew)", "")];
+  for (const b of [...state.brews].reverse()) {
+    const when = dateFmt.format(new Date(b.start * 1000));
+    opts.push(new Option(`${b.name} · ${when}${b.end ? "" : " · active"}`, b.id));
+  }
+  pick.replaceChildren(...opts);
+  pick.value = state.brewId || "";
+  const b = activeBrew();
+  $("editBrew").disabled = !b;
+  $("endBrew").disabled = !b || !!b.end;
+}
+
+async function loadRows() {
+  const d = currentDevice();
+  const b = activeBrew();
+  const now = Date.now() / 1000;
+  let since = b ? b.start : now - 7 * 86400;
+  const until = b?.end ?? now + 60;
+  if (range) since = Math.max(since, until - range);
+  const q = new URLSearchParams({ since, until });
+  const dev = b?.device || d?.device;
+  if (dev) q.set("device", dev);
+  const res = await api("/api/readings?" + q);
+  rows = res.rows.map((r) => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
+  renderCharts();
+  renderTiles();
+  if (showTable) renderTable();
+}
+
+function brewOG() {
+  const b = activeBrew();
+  if (b?.og) return b.og;
+  if (b && rows.length) return sgOf(rows[0]);
+  return null;
+}
+
+function renderTiles() {
+  const d = currentDevice();
+  const latest = d || rows[rows.length - 1];
+  if (!latest) return;
+  const sg = sgOf(latest), og = brewOG();
+  $("tSG").textContent = fmtSG(sg);
+  $("tSGsub").textContent = state.poly ? (og ? `OG ${fmtSG(og)}` : "") : "⚠ Uncalibrated";
+  $("tSGsub").className = state.poly ? "sub" : "sub warn";
+  $("tTemp").textContent = fmtT(tempOf(latest));
+  $("tTempSub").textContent = state.tempOffset ? `offset ${state.tempOffset > 0 ? "+" : ""}${state.tempOffset.toFixed(1)} °C` : "uncorrected";
+  if (og && og > 1) {
+    $("tABV").textContent = ((og - sg) * 131.25).toFixed(1) + " %";
+    $("tABVsub").textContent = `${Math.round((og - sg) / (og - 1) * 100)} % apparent attenuation`;
+  } else {
+    $("tABV").textContent = "–";
+    $("tABVsub").textContent = "start a brew to track";
+  }
+  const now = latest.t, past = rows.filter((r) => r.t <= now - 86400).pop();
+  if (past) {
+    const delta = sg - sgOf(past);
+    $("tRate").textContent = (delta >= 0 ? "+" : "−") + Math.abs(delta * 1000).toFixed(1) + " pts";
+    $("tRateSub").textContent = Math.abs(delta) < 0.001 ? "stable: fermentation may be done" : "gravity points per day";
+  } else {
+    $("tRate").textContent = "–";
+    $("tRateSub").textContent = "needs 24 h of data";
+  }
+  $("tTilt").textContent = tiltOf(latest).toFixed(1) + "°";
+  const v = (latest.vdd / 1000).toFixed(2);
+  const ageTxt = live ? ago(live.now - latest.t) : "";
+  $("tPill").textContent = `${v} V · ${latest.rssi} dBm · ${ageTxt}`;
+  $("sgNote").textContent = state.poly ? "" : "(uncalibrated: values from the pill's default curve)";
+}
+
+function renderTable() {
+  const wrap = $("tableWrap");
+  const t = document.createElement("table");
+  const head = t.createTHead().insertRow();
+  for (const h of ["Time", "SG", "Temp °C", "Tilt °", "Supply V", "RSSI"]) {
+    const th = document.createElement("th"); th.textContent = h; head.appendChild(th);
+  }
+  const body = t.createTBody();
+  for (const r of rows.slice(-500).reverse()) {
+    const tr = body.insertRow();
+    for (const v of [fullFmt.format(new Date(r.t * 1000)), fmtSG(sgOf(r)), tempOf(r).toFixed(1),
+                     tiltOf(r).toFixed(2), (r.vdd / 1000).toFixed(2), r.rssi]) {
+      tr.insertCell().textContent = v;
+    }
+  }
+  wrap.replaceChildren(t);
+}
+
+// ---------- charts (plain SVG) ----------
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function niceTicks(lo, hi, count) {
+  const span = hi - lo, raw = span / count, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= count) || 10 * mag;
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-6; v += step) ticks.push(+v.toFixed(10));
+  return { ticks, step };
+}
+function timeTicks(t0, t1) {
+  const H = 3600, steps = [H, 2 * H, 3 * H, 6 * H, 12 * H, 86400, 2 * 86400, 7 * 86400];
+  const step = steps.find((s) => (t1 - t0) / s <= 7) || 14 * 86400;
+  const offset = new Date().getTimezoneOffset() * 60;   // align to local midnight
+  const ticks = [];
+  for (let t = Math.ceil((t0 - offset) / step) * step + offset; t <= t1; t += step) ticks.push(t);
+  return { ticks, daily: step >= 86400 };
+}
+
+const M = { l: 52, r: 14, t: 10, b: 24 };
+const charts = [];
+
+function lineChart(host, { data, color, x0, x1, minSpan, fmt, height = 200 }) {
+  const w = host.clientWidth || 800, h = height;
+  const svg = el("svg", { width: w, height: h, viewBox: `0 0 ${w} ${h}`, role: "img" });
+  host.replaceChildren(svg);
+  const vals = data.map((d) => d.v);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < minSpan) { const c = (hi + lo) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const { ticks } = niceTicks(lo, hi, 5);
+  const X = (t) => M.l + (t - x0) / (x1 - x0 || 1) * (w - M.l - M.r);
+  const Y = (v) => M.t + (hi - v) / (hi - lo) * (h - M.t - M.b);
+
+  for (const v of ticks) {
+    el("line", { x1: M.l, x2: w - M.r, y1: Y(v), y2: Y(v), stroke: "var(--grid)" }, svg);
+    el("text", { x: M.l - 8, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = fmt(v);
+  }
+  const tt = timeTicks(x0, x1);
+  for (const t of tt.ticks) {
+    const d = new Date(t * 1000);
+    const midnight = d.getHours() === 0 && d.getMinutes() === 0;
+    el("text", { x: X(t), y: h - 6, "text-anchor": "middle" }, svg).textContent =
+      tt.daily || midnight ? dateFmt.format(d) : timeFmt.format(d);
+  }
+  el("line", { x1: M.l, x2: w - M.r, y1: h - M.b, y2: h - M.b, stroke: "var(--axis)" }, svg);
+
+  // Break the line where the pill went quiet for more than 15 minutes
+  let path = "";
+  data.forEach((d, i) => {
+    const gap = i === 0 || d.t - data[i - 1].t > 900;
+    path += `${gap ? "M" : "L"}${X(d.t).toFixed(1)},${Y(d.v).toFixed(1)}`;
+  });
+  el("path", { d: path, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+  const last = data[data.length - 1];
+  el("circle", { cx: X(last.t), cy: Y(last.v), r: 4, fill: color, stroke: "var(--surface-1)", "stroke-width": 2 }, svg);
+
+  const cross = el("line", { y1: M.t, y2: h - M.b, stroke: "var(--text-muted)", "stroke-width": 1, visibility: "hidden" }, svg);
+  const mark = el("circle", { r: 4, fill: color, stroke: "var(--surface-1)", "stroke-width": 2, visibility: "hidden" }, svg);
+  const hit = el("rect", { x: M.l, y: 0, width: w - M.l - M.r, height: h, fill: "transparent" }, svg);
+  return {
+    svg, hit, data,
+    tAt: (px) => x0 + (px - M.l) / (w - M.l - M.r) * (x1 - x0),
+    show(t) {
+      if (t == null) { cross.setAttribute("visibility", "hidden"); mark.setAttribute("visibility", "hidden"); return null; }
+      const d = nearest(data, t);
+      cross.setAttribute("x1", X(d.t)); cross.setAttribute("x2", X(d.t));
+      mark.setAttribute("cx", X(d.t)); mark.setAttribute("cy", Y(d.v));
+      cross.setAttribute("visibility", "visible"); mark.setAttribute("visibility", "visible");
+      return d;
+    },
+  };
+}
+function nearest(data, t) {
+  let lo = 0, hi = data.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (data[m].t < t) lo = m; else hi = m; }
+  return Math.abs(data[lo].t - t) < Math.abs(data[hi].t - t) ? data[lo] : data[hi];
+}
+
+function renderCharts() {
+  charts.length = 0;
+  const sgHost = $("chartSG"), tHost = $("chartTemp");
+  if (rows.length < 2) {
+    const msg = document.createElement("div");
+    msg.className = "empty";
+    msg.textContent = rows.length ? "One reading so far; the chart appears after the next one (about a minute)."
+                                  : "No readings in this range yet. Readings are logged about once a minute while the pill is in range.";
+    sgHost.replaceChildren(msg);
+    tHost.replaceChildren();
+    return;
+  }
+  const b = activeBrew();
+  const x1 = b?.end ?? Math.max(rows[rows.length - 1].t, Date.now() / 1000);
+  const x0 = range ? x1 - range : (b?.start ?? rows[0].t);
+  const sg = rows.map((r) => ({ t: r.t, v: sgOf(r) }));
+  const tp = rows.map((r) => ({ t: r.t, v: tempOf(r) }));
+  const css = getComputedStyle(document.documentElement);
+  charts.push(lineChart(sgHost, { data: sg, color: css.getPropertyValue("--series-sg"), x0, x1, minSpan: 0.006, fmt: (v) => v.toFixed(3), height: 240 }));
+  charts.push(lineChart(tHost, { data: tp, color: css.getPropertyValue("--series-temp"), x0, x1, minSpan: 2, fmt: (v) => v.toFixed(1), height: 150 }));
+
+  const tip = $("tooltip"), wrap = $("charts");
+  for (const c of charts) {
+    c.hit.addEventListener("pointermove", (e) => {
+      const box = c.svg.getBoundingClientRect();
+      const t = c.tAt(e.clientX - box.left);
+      const [s, temp] = charts.map((ch) => ch.show(t));
+      tip.replaceChildren();
+      const when = document.createElement("div"); when.className = "when";
+      when.textContent = fullFmt.format(new Date(s.t * 1000)); tip.appendChild(when);
+      for (const [v, name, color] of [[fmtSG(s.v), "Gravity", "--series-sg"], [temp.v.toFixed(1) + " °C", "Temperature", "--series-temp"]]) {
+        const row = document.createElement("div"); row.className = "tt-row";
+        const key = document.createElement("span"); key.className = "key"; key.style.background = `var(${color})`;
+        const strong = document.createElement("strong"); strong.textContent = v;
+        const label = document.createElement("span"); label.className = "name"; label.textContent = name;
+        row.append(key, strong, label); tip.appendChild(row);
+      }
+      tip.style.display = "block";
+      const wb = wrap.getBoundingClientRect();
+      let left = e.clientX - wb.left + 14;
+      if (left + tip.offsetWidth > wb.width) left = e.clientX - wb.left - tip.offsetWidth - 14;
+      tip.style.left = left + "px";
+      tip.style.top = (e.clientY - wb.top - tip.offsetHeight / 2) + "px";
+    });
+    c.hit.addEventListener("pointerleave", () => { charts.forEach((ch) => ch.show(null)); tip.style.display = "none"; });
+  }
+}
+
+// ---------- brews ----------
+function openBrewDialog(brew) {
+  $("brewDialogTitle").textContent = brew ? "Edit brew" : "New brew";
+  $("brewName").value = brew?.name || "";
+  $("brewOG").value = brew?.og || "";
+  const dlg = $("brewDialog");
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== "ok") return;
+    const name = $("brewName").value.trim() || "Untitled brew";
+    const og = parseFloat($("brewOG").value) || null;
+    if (brew) {
+      Object.assign(brew, { name, og });
+    } else {
+      for (const b of state.brews) if (!b.end) b.end = Date.now() / 1000;
+      const nb = { id: String(Date.now()), name, og, start: Date.now() / 1000, end: null, device: currentDevice()?.device || null };
+      state.brews.push(nb);
+      state.brewId = nb.id;
+      range = 0; syncRange();
+    }
+    await saveState();
+    renderBrewPick();
+    loadRows();
+  };
+  dlg.returnValue = "";
+  dlg.showModal();
+}
+
+function syncRange() {
+  for (const b of $("rangeSeg").querySelectorAll("button")) b.setAttribute("aria-pressed", String(+b.dataset.range === range));
+}
+
+// ---------- calibration ----------
+let calRecent = [];
+
+async function refreshCalRecent() {
+  const d = currentDevice();
+  if (!d) return;
+  const now = Date.now() / 1000;
+  const res = await api("/api/readings?" + new URLSearchParams({ device: d.device, since: now - 300, until: now + 60 }));
+  calRecent = res.rows.map((r) => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
+  renderCalibrateLive();
+}
+
+function recentTilt() {
+  const src = calRecent.length ? calRecent : (currentDevice() ? [currentDevice()] : []);
+  if (!src.length) return null;
+  const ts = src.map((r) => tiltOf(r));
+  const mean = ts.reduce((a, b) => a + b, 0) / ts.length;
+  const sd = Math.sqrt(ts.reduce((a, b) => a + (b - mean) ** 2, 0) / ts.length);
+  return { mean, sd, n: ts.length };
+}
+
+function renderCalibrateLive() {
+  const d = currentDevice();
+  const axes = $("axes");
+  if (!axes.children.length) {
+    for (const a of AXES) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio"; input.name = "axis"; input.value = a; input.style.marginRight = "6px";
+      input.addEventListener("change", async () => {
+        if (state.points.length && !confirm("Changing the axis invalidates your calibration points. Clear them?")) { input.checked = false; renderCalibrateLive(); return; }
+        state.axis = a; state.points = []; state.poly = null;
+        await saveState(); renderCalibration(); renderCalibrateLive(); loadRows();
+      });
+      const name = document.createElement("span"); name.textContent = `${a.toUpperCase()} axis`;
+      const big = document.createElement("div"); big.className = "big"; big.id = "axis-" + a; big.textContent = "–";
+      label.append(input, name, big);
+      axes.appendChild(label);
+    }
+  }
+  for (const a of AXES) {
+    axes.querySelector(`input[value=${a}]`).checked = state.axis === a;
+    $("axis-" + a).textContent = d ? tiltOf(d, a).toFixed(1) + "°" : "–";
+  }
+  const rt = recentTilt();
+  $("calTilt").textContent = rt ? rt.mean.toFixed(2) + "°" : "–";
+  if (rt) {
+    const settled = rt.n >= 3 && rt.sd < 0.3;
+    $("calSpread").textContent = `±${rt.sd.toFixed(2)}° over ${rt.n} reading${rt.n === 1 ? "" : "s"} · ${settled ? "✓ settled" : "⏳ settling"}`;
+    $("calSpread").className = settled ? "badge" : "badge warn";
+  }
+  $("rawTemp").textContent = d ? fmtT(d.temp - (state.pillTempOffset || 0)) : "–";
+  $("curOffset").textContent = `${(state.tempOffset || 0) >= 0 ? "+" : ""}${(state.tempOffset || 0).toFixed(1)} °C`;
+}
+
+function currentFit() {
+  const deg = +$("degree").value;
+  return state.points.length > deg ? fit(state.points, deg) : null;
+}
+
+function renderCalibration() {
+  $("degree").value = String(state.degree || 2);
+  const p = currentFit();
+  const host = $("pointsTable");
+  if (!state.points.length) {
+    host.innerHTML = '<p class="hint">No points yet. Start with plain water at SG 1.000.</p>';
+  } else {
+    const t = document.createElement("table");
+    const head = t.createTHead().insertRow();
+    for (const h of ["Tilt °", "Measured", "SG", "Fit", "Error", ""]) { const th = document.createElement("th"); th.textContent = h; head.appendChild(th); }
+    const body = t.createTBody();
+    state.points.forEach((pt, i) => {
+      const tr = body.insertRow();
+      const est = p ? polyEval(p, pt.tilt) : null;
+      const measured = pt.brix != null ? `${pt.brix.toFixed(1)} °Bx${pt.wcf && pt.wcf !== 1 ? ` ÷ ${pt.wcf}` : ""}` : "SG";
+      for (const v of [pt.tilt.toFixed(2), measured, pt.sg.toFixed(3), est ? est.toFixed(4) : "–",
+                       est ? ((est - pt.sg) * 1000).toFixed(1) + " pts" : "–"]) tr.insertCell().textContent = v;
+      const del = document.createElement("button"); del.className = "btn"; del.textContent = "Remove";
+      del.addEventListener("click", async () => { state.points.splice(i, 1); await saveState(); renderCalibration(); });
+      tr.insertCell().appendChild(del);
+    });
+    host.replaceChildren(t);
+  }
+  const deg = +$("degree").value;
+  if (p) {
+    const rms = Math.sqrt(state.points.reduce((s, pt) => s + (polyEval(p, pt.tilt) - pt.sg) ** 2, 0) / state.points.length);
+    $("fitInfo").textContent = `RMS error ${(rms * 1000).toFixed(1)} pts`;
+  } else {
+    $("fitInfo").textContent = `needs ${deg + 1}+ points`;
+  }
+  $("saveCal").disabled = !p;
+  $("calStatus").textContent = state.poly
+    ? "In use: SG = " + state.poly.map((c, i) => c ? `${c.toPrecision(5)}${i ? "·t" + (i > 1 ? "^" + i : "") : ""}` : "")
+        .filter(Boolean).join(" + ") + "   (t = tilt in degrees)"
+    : "Not calibrated yet: gravity values come from the pill's placeholder curve.";
+  renderCalChart(p);
+}
+
+function renderCalChart(p) {
+  const host = $("calChart");
+  const pts = state.points;
+  if (!pts.length) { host.innerHTML = '<div class="empty">Add points to see the fit.</div>'; return; }
+  const w = host.clientWidth || 500, h = 280;
+  const svg = el("svg", { width: w, height: h, viewBox: `0 0 ${w} ${h}` });
+  host.replaceChildren(svg);
+  let tl = Math.min(...pts.map((q) => q.tilt)), th = Math.max(...pts.map((q) => q.tilt));
+  if (th - tl < 10) { tl -= 5; th += 5; }
+  tl -= (th - tl) * 0.1; th += (th - tl) * 0.1;
+  const curve = p ? Array.from({ length: 61 }, (_, i) => { const t = tl + (th - tl) * i / 60; return { t, v: polyEval(p, t) }; }) : [];
+  const vs = [...pts.map((q) => q.sg), ...curve.map((c) => c.v)];
+  let lo = Math.min(...vs), hi = Math.max(...vs);
+  if (hi - lo < 0.01) { lo -= 0.005; hi += 0.005; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const X = (t) => M.l + (t - tl) / (th - tl) * (w - M.l - M.r);
+  const Y = (v) => M.t + (hi - v) / (hi - lo) * (h - M.t - M.b - 12);
+  for (const v of niceTicks(lo, hi, 5).ticks) {
+    el("line", { x1: M.l, x2: w - M.r, y1: Y(v), y2: Y(v), stroke: "var(--grid)" }, svg);
+    el("text", { x: M.l - 8, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = v.toFixed(3);
+  }
+  for (const t of niceTicks(tl, th, 6).ticks) {
+    el("text", { x: X(t), y: h - 18, "text-anchor": "middle" }, svg).textContent = t + "°";
+  }
+  el("text", { x: (M.l + w - M.r) / 2, y: h - 2, "text-anchor": "middle" }, svg).textContent = "Tilt";
+  el("line", { x1: M.l, x2: w - M.r, y1: h - M.b - 12, y2: h - M.b - 12, stroke: "var(--axis)" }, svg);
+  if (curve.length) {
+    el("path", { d: curve.map((c, i) => `${i ? "L" : "M"}${X(c.t).toFixed(1)},${Y(c.v).toFixed(1)}`).join(""),
+                 fill: "none", stroke: "var(--series-sg)", "stroke-width": 2 }, svg);
+  }
+  const tip = $("calTooltip"), wrap = $("calChartWrap");
+  for (const q of pts) {
+    const c = el("circle", { cx: X(q.tilt), cy: Y(q.sg), r: 5, fill: "var(--surface-1)", stroke: "var(--text-primary)", "stroke-width": 2 }, svg);
+    const hit = el("circle", { cx: X(q.tilt), cy: Y(q.sg), r: 14, fill: "transparent" }, svg);
+    hit.addEventListener("pointerenter", () => {
+      c.setAttribute("r", 6);
+      tip.replaceChildren();
+      const lines = [[q.sg.toFixed(3), "measured SG"], [q.tilt.toFixed(2) + "°", "tilt"]];
+      if (p) lines.push([((polyEval(p, q.tilt) - q.sg) * 1000).toFixed(1) + " pts", "fit error"]);
+      for (const [v, n] of lines) {
+        const row = document.createElement("div"); row.className = "tt-row";
+        const s = document.createElement("strong"); s.textContent = v;
+        const l = document.createElement("span"); l.className = "name"; l.textContent = n;
+        row.append(s, l); tip.appendChild(row);
+      }
+      tip.style.display = "block";
+      tip.style.left = Math.min(X(q.tilt) + 12, w - tip.offsetWidth) + "px";
+      tip.style.top = (Y(q.sg) - tip.offsetHeight - 8) + "px";
+    });
+    hit.addEventListener("pointerleave", () => { c.setAttribute("r", 5); tip.style.display = "none"; });
+  }
+}
+
+// ---------- wiring ----------
+function showTab(name) {
+  for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === name));
+  $("tab-ferment").hidden = name !== "ferment";
+  $("tab-calibrate").hidden = name !== "calibrate";
+  if (name === "calibrate") { renderCalibration(); refreshCalRecent(); } else { renderCharts(); }
+}
+for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => showTab(b.dataset.tab));
+
+$("devicePick").addEventListener("change", async (e) => { state.device = e.target.value; await saveState(); loadRows(); });
+$("brewPick").addEventListener("change", async (e) => { state.brewId = e.target.value || null; await saveState(); renderBrewPick(); loadRows(); });
+$("newBrew").addEventListener("click", () => openBrewDialog(null));
+$("editBrew").addEventListener("click", () => openBrewDialog(activeBrew()));
+$("endBrew").addEventListener("click", async () => {
+  const b = activeBrew();
+  if (!b || !confirm(`End “${b.name}”? Its chart stops at this moment.`)) return;
+  b.end = Date.now() / 1000; await saveState(); renderBrewPick(); loadRows();
+});
+for (const b of $("rangeSeg").querySelectorAll("button")) {
+  b.addEventListener("click", () => { range = +b.dataset.range; syncRange(); loadRows(); });
+}
+$("tableToggle").addEventListener("click", () => {
+  showTable = !showTable;
+  $("tableWrap").hidden = !showTable;
+  $("tableToggle").textContent = showTable ? "Chart only" : "Table";
+  if (showTable) renderTable();
+});
+
+// Refractometer °Brix → SG (sucrose scale; the usual homebrew conversion)
+const brixToSG = (bx) => 1 + bx / (258.6 - (bx / 258.2) * 227.1);
+
+/** The entered measurement as { sg, brix?, wcf? }, or an error string. */
+function measuredInput() {
+  const v = parseFloat($("calSG").value);
+  if (isNaN(v)) return null;
+  if ($("calUnit").value === "brix") {
+    const wcf = parseFloat($("wcf").value) || 1;
+    if (!(v >= 0 && v <= 40)) return "Enter the refractometer reading in °Brix, e.g. 0 for water or 10.5.";
+    return { sg: +brixToSG(v / wcf).toFixed(4), brix: v, wcf };
+  }
+  if (!(v > 0.98 && v < 1.2)) return "Enter the measured specific gravity, e.g. 1.000 or 1.045.";
+  return { sg: v };
+}
+
+function syncUnit() {
+  const brix = $("calUnit").value === "brix";
+  $("wcfWrap").hidden = !brix;
+  $("calSG").step = brix ? "0.1" : "0.001";
+  $("calSG").placeholder = brix ? "0.0" : "1.000";
+  const m = measuredInput();
+  $("calConv").textContent = brix && m && typeof m === "object"
+    ? `= SG ${m.sg.toFixed(4)}` : brix ? "Sugar water: WCF 1.00. Wort: about 1.04." : " ";
+}
+$("calUnit").value = localStorage.getItem("brewpill.calUnit") || "sg";
+$("calUnit").addEventListener("change", () => {
+  try { localStorage.setItem("brewpill.calUnit", $("calUnit").value); } catch {}
+  $("calSG").value = "";
+  syncUnit();
+});
+$("calSG").addEventListener("input", syncUnit);
+$("wcf").addEventListener("input", syncUnit);
+syncUnit();
+
+$("addPoint").addEventListener("click", async () => {
+  const m = measuredInput(), rt = recentTilt();
+  if (!rt) return alert("No readings from the pill yet.");
+  if (!m) return alert("Enter a measurement first.");
+  if (typeof m === "string") return alert(m);
+  state.points.push({ tilt: +rt.mean.toFixed(3), ...m, t: Date.now() / 1000 });
+  state.points.sort((a, b) => a.tilt - b.tilt);
+  $("calSG").value = "";
+  syncUnit();
+  await saveState(); renderCalibration();
+});
+$("degree").addEventListener("change", async () => { state.degree = +$("degree").value; await saveState(); renderCalibration(); });
+$("saveCal").addEventListener("click", async () => {
+  state.poly = currentFit(); state.degree = +$("degree").value;
+  await saveState(); renderCalibration(); loadRows();
+});
+$("setOffset").addEventListener("click", async () => {
+  const d = currentDevice(), actual = parseFloat($("actualTemp").value);
+  if (!d || isNaN(actual)) return;
+  state.tempOffset = +(actual - (d.temp - (state.pillTempOffset || 0))).toFixed(2);
+  await saveState(); renderCalibrateLive(); renderTiles(); loadRows();
+});
+$("clearOffset").addEventListener("click", async () => { state.tempOffset = 0; await saveState(); renderCalibrateLive(); renderTiles(); loadRows(); });
+$("writePill").addEventListener("click", async () => {
+  if (!state.poly && !confirm("No calibration is in use yet; write the placeholder curve anyway?")) return;
+  const btn = $("writePill"), status = $("writeStatus"), out = $("writeOut");
+  btn.disabled = true; status.textContent = "Writing over ST-Link…"; out.hidden = true;
+  const req = { poly: state.poly || [0.95, 0.002, 0, 0], axis: AXES.indexOf(state.axis), color: +$("tiltColor").value,
+                tempOffset: state.tempOffset || 0, measure: +$("measureS").value || 60, adv: 2000 };
+  try {
+    const res = await api("/api/write-pill", { method: "POST", body: JSON.stringify(req) });
+    status.textContent = res.ok ? "✓ Written and verified. The pill has restarted." : "✗ Failed: is the ST-Link connected?";
+    if (res.ok) { state.pillTempOffset = req.tempOffset; await saveState(); }
+    else { out.textContent = res.output; out.hidden = false; }
+  } catch (e) {
+    status.textContent = "✗ " + e.message;
+  }
+  btn.disabled = false;
+});
+
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (!$("tab-ferment").hidden) renderCharts(); else renderCalibration(); }, 150);
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderCharts());
+
+(async function start() {
+  await loadState();
+  renderBrewPick();
+  await pollLive();
+  await loadRows();
+  setInterval(pollLive, 2000);
+  setInterval(loadRows, 60000);
+  setInterval(() => { if (!$("tab-calibrate").hidden) refreshCalRecent(); }, 10000);
+})();
+</script>
+</body>
+</html>
