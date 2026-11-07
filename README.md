@@ -44,3 +44,6 @@ for a minute, the setup network opens again.
 The gateway forwards the gravity the pill computes, so calibrate in BrewPill.app
 and then use **Write to pill** (ST-Link) so Brewfather gets calibrated values.
 Brewfather accepts one reading per 15 minutes; the webhook interval is configurable.
+To check a webhook, press **Send test webhook** on the status page (or type `t` in
+the serial monitor). It posts one reading marked `"test": true`, using the latest
+pill's values or sample ones, and shows the HTTP status and reply.

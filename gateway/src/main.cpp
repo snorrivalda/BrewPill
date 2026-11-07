@@ -153,6 +153,46 @@ static int post(const String &url, const String &json, String &reply, const Stri
     return code;
 }
 
+static String pillName(const String &key) { return cfg.name + "-" + shortId(key); }
+
+static String hookJson(const String &key, const Pill &p, uint32_t now, bool test = false) {
+    char json[420];
+    snprintf(json, sizeof json,
+        "{\"device\":\"%s\",\"name\":\"%s\",\"sg\":%.4f,\"tilt\":%.2f,\"temp_c\":%.2f,"
+        "\"vdd_mv\":%u,\"rssi\":%d,\"x_mg\":%d,\"y_mg\":%d,\"z_mg\":%d,"
+        "\"calibrated\":%s,\"age_s\":%lu%s}",
+        key.c_str(), pillName(key).c_str(), p.sg, p.tilt, p.temp, p.vdd, p.rssi,
+        p.x, p.y, p.z, (p.flags & 2) ? "true" : "false",
+        (unsigned long)((now - p.seen) / 1000), test ? ",\"test\":true" : "");
+    return json;
+}
+
+/* One webhook post right now, marked "test":true. Uses the freshest pill
+ * reading, or made-up values if no pill has been heard. Returns "code reply". */
+static String sendTestHook() {
+    String status;
+    if (!cfg.webhook.length()) status = "no webhook URL saved";
+    else if (WiFi.status() != WL_CONNECTED) status = "Wi-Fi not connected";
+    else {
+        String key = "00:00:00:00:00:00";
+        Pill p;
+        p.sg = 1.0500f; p.tilt = 45.0f; p.temp = 20.0f; p.vdd = 3000;
+        LOCK();
+        uint32_t now = millis();                    // inside the lock, so no pill is newer than now
+        p.seen = now;
+        const std::pair<const String, Pill> *best = nullptr;
+        for (auto &kv : pills)
+            if (!best || now - kv.second.seen < now - best->second.seen) best = &kv;
+        if (best) { key = best->first; p = best->second; }
+        UNLOCK();
+        String reply;
+        int code = post(cfg.webhook, hookJson(key, p, now, true), reply, cfg.webhookSecret);
+        status = String(code) + " " + reply;
+    }
+    Serial.printf("Test webhook: %s\n", status.c_str());
+    return status;
+}
+
 static void forward() {
     if (WiFi.status() != WL_CONNECTED) return;
     std::map<String, Pill> snap;
@@ -165,7 +205,7 @@ static void forward() {
         const String &key = kv.first;
         const Pill &p = kv.second;
         if (now - p.seen > STALE_S * 1000) continue;
-        String name = cfg.name + "-" + shortId(key);
+        String name = pillName(key);
         bool calibrated = p.flags & 2;
         String status;
 
@@ -188,16 +228,8 @@ static void forward() {
         }
 
         if (cfg.webhook.length() && (!p.everHook || now - p.sentHook >= cfg.webhookEvery * 1000)) {
-            char json[400];
-            snprintf(json, sizeof json,
-                "{\"device\":\"%s\",\"name\":\"%s\",\"sg\":%.4f,\"tilt\":%.2f,\"temp_c\":%.2f,"
-                "\"vdd_mv\":%u,\"rssi\":%d,\"x_mg\":%d,\"y_mg\":%d,\"z_mg\":%d,"
-                "\"calibrated\":%s,\"age_s\":%lu}",
-                key.c_str(), name.c_str(), p.sg, p.tilt, p.temp, p.vdd, p.rssi,
-                p.x, p.y, p.z, calibrated ? "true" : "false",
-                (unsigned long)((now - p.seen) / 1000));
             String reply;
-            int code = post(cfg.webhook, json, reply, cfg.webhookSecret);
+            int code = post(cfg.webhook, hookJson(key, p, now), reply, cfg.webhookSecret);
             status = String(code) + " " + reply;
             Serial.printf("Webhook %s: %s\n", name.c_str(), status.c_str());
             LOCK();
@@ -292,12 +324,18 @@ static void handleRoot() {
         char line[220];
         snprintf(line, sizeof line, "SG %.4f · %.1f °C · tilt %.1f° · %.2f V · %d dBm · %lus ago",
                  p.sg, p.temp, p.tilt, p.vdd / 1000.0f, p.rssi, (unsigned long)((millis() - p.seen) / 1000));
-        h += "<p><b>" + esc(cfg.name + "-" + shortId(kv.first)) + "</b>";
+        h += "<p><b>" + esc(pillName(kv.first)) + "</b>";
         if (!(p.flags & 2)) h += F(" <small>(uncalibrated: use “Write to pill” in BrewPill.app)</small>");
         h += "<br>" + String(line);
         h += "<br><small>Brewfather: " + esc(p.lastBF) + "<br>Webhook: " + esc(p.lastHook) + "</small></p>";
     }
     h += F("</div>");
+
+    if (cfg.webhook.length())
+        h += F("<form class=card method=post action=/test><h2>Webhook test</h2>"
+               "<small>Posts one reading now (the latest pill's, or sample values) with "
+               "<code>\"test\":true</code> and the saved secret.</small><br>"
+               "<button>Send test webhook</button></form>");
 
     h += F("<form class=card method=post action=/save><h2>Settings</h2>"
            "<label>Wi-Fi network</label><input name=ssid autocomplete=off value=\"");
@@ -348,6 +386,14 @@ static void handleSave() {
     ESP.restart();
 }
 
+static void handleTest() {
+    String status = sendTestHook();
+    web.send(200, "text/html; charset=utf-8",
+             "<meta name=viewport content='width=device-width'><body style='font:16px system-ui;padding:20px'>"
+             "Test webhook to <b>" + esc(cfg.webhook) + "</b>:<br><br><code>" + esc(status) +
+             "</code><br><br><a href=/>Back</a></body>");
+}
+
 /* One serial line per pill each minute, so reception can be checked over USB */
 static void logPills() {
     std::map<String, Pill> snap;
@@ -379,6 +425,7 @@ void setup() {
 
     web.on("/", HTTP_GET, handleRoot);
     web.on("/save", HTTP_POST, handleSave);
+    web.on("/test", HTTP_POST, handleTest);
     web.onNotFound([] {
         if (!apOn) { web.send(404, "text/plain", "Not found"); return; }
         web.sendHeader("Location", "http://192.168.4.1/");   // captive portal: everything → setup
@@ -394,6 +441,11 @@ void loop() {
     if (apOn) dns.processNextRequest();
     web.handleClient();
     keepScanning();
+
+    if (Serial.available()) {
+        int c = Serial.read();
+        if (c == 't' || c == 'T') sendTestHook();
+    }
 
     static uint32_t lastForward = 0;
     if (millis() - lastForward > 5000) {
