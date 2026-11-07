@@ -245,20 +245,23 @@ a { color: var(--accent); }
         </div>
       </div>
       <div class="panel">
-        <h2>4 · Write to pill <span class="badge">(optional, needs ST-Link)</span></h2>
-        <p class="hint">This app calculates gravity from the raw readings itself, so this step isn't needed for this app. Write the calibration to the pill when you also want Tilt-compatible apps to show correct gravity.</p>
+        <h2>4 · Send to gateway</h2>
+        <p class="hint">The pill only broadcasts raw readings. The BrewPill gateway turns them into gravity for Brewfather and webhooks, so send it the axis, curve and temperature offset above. The gateway and this Mac must be on the same network.</p>
         <div class="row" style="margin-bottom:8px">
-          <label for="tiltColor">Tilt colour</label>
-          <select id="tiltColor">
-            <option value="0">Off</option><option value="1" selected>Red</option><option value="2">Green</option>
-            <option value="3">Black</option><option value="4">Purple</option><option value="5">Orange</option>
-            <option value="6">Blue</option><option value="7">Yellow</option><option value="8">Pink</option>
-          </select>
-          <label for="measureS">Read every</label>
-          <input type="number" id="measureS" value="60" min="5" max="3600" style="width:70px"> s
+          <label for="gatewayHost">Gateway</label>
+          <input id="gatewayHost" style="width:180px">
+          <span class="badge" id="pillIdNote"></span>
         </div>
         <div class="row">
-          <button class="btn primary" id="writePill">Write to pill</button>
+          <button class="btn primary" id="sendGateway">Send to gateway</button>
+          <span class="badge" id="gatewayStatus"></span>
+        </div>
+        <pre class="out" id="gatewayOut" hidden></pre>
+        <h2 style="margin-top:18px">Pill intervals <span class="badge">(optional, needs ST-Link)</span></h2>
+        <div class="row" style="margin-bottom:8px">
+          <label for="measureS">Read every</label>
+          <input type="number" id="measureS" value="60" min="5" max="3600" style="width:70px"> s
+          <button class="btn" id="writePill">Write to pill</button>
           <span class="badge" id="writeStatus"></span>
         </div>
         <pre class="out" id="writeOut" hidden></pre>
@@ -299,9 +302,11 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error(`${path}: ${r.status}`);
   return r.headers.get("content-type")?.includes("json") ? r.json() : r.text();
 }
+const DEFAULT_GATEWAY = "brewpill-gw.local";
 async function loadState() {
   state = Object.assign({ axis: "x", points: [], degree: 2, poly: null, tempOffset: 0,
-                          pillTempOffset: 0, brews: [], brewId: null, device: null }, await api("/api/state"));
+                          pillTempOffset: 0, brews: [], brewId: null, device: null,
+                          gatewayHost: DEFAULT_GATEWAY }, await api("/api/state"));
 }
 const saveState = () => api("/api/state", { method: "PUT", body: JSON.stringify(state) });
 
@@ -313,8 +318,17 @@ function tiltOf(r, axis = state.axis) {
   return Math.atan2(Math.hypot(g[b], g[c]), Math.abs(g[axis])) * 180 / Math.PI;
 }
 const polyEval = (p, t) => p.reduce((s, c, i) => s + c * t ** i, 0);
-const sgOf = (r) => state.poly ? polyEval(state.poly, tiltOf(r)) : r.sg;
-const tempOf = (r) => r.temp - (state.pillTempOffset || 0) + (state.tempOffset || 0);
+const PLACEHOLDER = [0.95, 0.002, 0, 0];   // 25° → 1.000, 75° → 1.100, as on the gateway
+// Rows logged from v1 firmware carry the pill's own tilt/SG, and a temperature
+// that already includes the offset last written to the pill (pillTempOffset).
+// v2 pills send raw readings only: tilt and sg are 0.
+const legacy = (r) => r.tilt > 0 || r.sg > 0;
+function sgOf(r) {
+  if (!state.poly && legacy(r)) return r.sg;
+  return polyEval(state.poly || PLACEHOLDER, tiltOf(r));
+}
+const rawTempOf = (r) => r.temp - (legacy(r) ? state.pillTempOffset || 0 : 0);
+const tempOf = (r) => rawTempOf(r) + (state.tempOffset || 0);
 
 function fit(points, degree) {
   const n = degree + 1;
@@ -461,7 +475,7 @@ function renderTiles() {
   const v = (latest.vdd / 1000).toFixed(2);
   const ageTxt = live ? ago(live.now - latest.t) : "";
   $("tPill").textContent = `${v} V · ${latest.rssi} dBm · ${ageTxt}`;
-  $("sgNote").textContent = state.poly ? "" : "(uncalibrated: values from the pill's default curve)";
+  $("sgNote").textContent = state.poly ? "" : "(uncalibrated: values from the placeholder curve)";
 }
 
 function renderTable() {
@@ -696,7 +710,8 @@ function renderCalibrateLive() {
     $("calSpread").textContent = `±${rt.sd.toFixed(2)}° over ${rt.n} reading${rt.n === 1 ? "" : "s"} · ${settled ? "✓ settled" : "⏳ settling"}`;
     $("calSpread").className = settled ? "badge" : "badge warn";
   }
-  $("rawTemp").textContent = d ? fmtT(d.temp - (state.pillTempOffset || 0)) : "–";
+  $("rawTemp").textContent = d ? fmtT(rawTempOf(d)) : "–";
+  $("pillIdNote").textContent = d?.pillId ? `pill ID ${d.pillId}` : "waiting for the pill's ID…";
   $("curOffset").textContent = `${(state.tempOffset || 0) >= 0 ? "+" : ""}${(state.tempOffset || 0).toFixed(1)} °C`;
 }
 
@@ -739,7 +754,7 @@ function renderCalibration() {
   $("calStatus").textContent = state.poly
     ? "In use: SG = " + state.poly.map((c, i) => c ? `${c.toPrecision(5)}${i ? "·t" + (i > 1 ? "^" + i : "") : ""}` : "")
         .filter(Boolean).join(" + ") + "   (t = tilt in degrees)"
-    : "Not calibrated yet: gravity values come from the pill's placeholder curve.";
+    : "Not calibrated yet: gravity values come from a placeholder curve.";
   renderCalChart(p);
 }
 
@@ -878,21 +893,37 @@ $("saveCal").addEventListener("click", async () => {
 $("setOffset").addEventListener("click", async () => {
   const d = currentDevice(), actual = parseFloat($("actualTemp").value);
   if (!d || isNaN(actual)) return;
-  state.tempOffset = +(actual - (d.temp - (state.pillTempOffset || 0))).toFixed(2);
+  state.tempOffset = +(actual - rawTempOf(d)).toFixed(2);
   await saveState(); renderCalibrateLive(); renderTiles(); loadRows();
 });
 $("clearOffset").addEventListener("click", async () => { state.tempOffset = 0; await saveState(); renderCalibrateLive(); renderTiles(); loadRows(); });
+$("sendGateway").addEventListener("click", async () => {
+  const d = currentDevice();
+  const btn = $("sendGateway"), status = $("gatewayStatus"), out = $("gatewayOut");
+  // Sending the placeholder would make the gateway report the pill as calibrated
+  if (!state.poly) { status.textContent = "✗ Use a calibration (step 2) first"; return; }
+  state.gatewayHost = $("gatewayHost").value.trim() || DEFAULT_GATEWAY;
+  btn.disabled = true; status.textContent = "Sending…"; out.hidden = true;
+  const req = { host: state.gatewayHost, device: d?.pillId || "", poly: state.poly,
+                axis: AXES.indexOf(state.axis), tempOffset: state.tempOffset || 0 };
+  try {
+    await saveState();
+    const res = await api("/api/gateway-cal", { method: "POST", body: JSON.stringify(req) });
+    status.textContent = res.ok ? `✓ Gateway now calibrates pill ${req.device}.` : "✗ Failed";
+    if (!res.ok) { out.textContent = res.output; out.hidden = false; }
+  } catch (e) {
+    status.textContent = "✗ " + e.message;
+  }
+  btn.disabled = false;
+});
 $("writePill").addEventListener("click", async () => {
-  if (!state.poly && !confirm("No calibration is in use yet; write the placeholder curve anyway?")) return;
   const btn = $("writePill"), status = $("writeStatus"), out = $("writeOut");
   btn.disabled = true; status.textContent = "Writing over ST-Link…"; out.hidden = true;
-  const req = { poly: state.poly || [0.95, 0.002, 0, 0], axis: AXES.indexOf(state.axis), color: +$("tiltColor").value,
-                tempOffset: state.tempOffset || 0, measure: +$("measureS").value || 60, adv: 2000 };
+  const req = { measure: +$("measureS").value || 60, adv: 2000 };
   try {
     const res = await api("/api/write-pill", { method: "POST", body: JSON.stringify(req) });
     status.textContent = res.ok ? "✓ Written and verified. The pill has restarted." : "✗ Failed: is the ST-Link connected?";
-    if (res.ok) { state.pillTempOffset = req.tempOffset; await saveState(); }
-    else { out.textContent = res.output; out.hidden = false; }
+    if (!res.ok) { out.textContent = res.output; out.hidden = false; }
   } catch (e) {
     status.textContent = "✗ " + e.message;
   }
@@ -908,6 +939,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => rend
 
 (async function start() {
   await loadState();
+  $("gatewayHost").value = state.gatewayHost;
   renderBrewPick();
   await pollLive();
   await loadRows();

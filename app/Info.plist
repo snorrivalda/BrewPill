@@ -13,5 +13,7 @@
   <key>NSHighResolutionCapable</key><true/>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>BrewPill listens for your hydrometer's Bluetooth broadcasts.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>BrewPill sends your pill's calibration to the BrewPill gateway on your network.</string>
 </dict>
 </plist>

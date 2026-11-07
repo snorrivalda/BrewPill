@@ -1,12 +1,11 @@
 /*
  * Brew Pill firmware for the CJMCU-8223 (nRF51822 + LIS3DH).
  *
- * Every measure_s seconds the pill wakes the accelerometer, averages a burst
- * of readings, and turns the capsule's tilt into specific gravity using the
- * calibration polynomial from flash. Every adv_ms milliseconds it broadcasts
- * the latest reading as two BLE advertisements:
- *   - "BrewPill" manufacturer data with raw tilt, temperature, supply and SG,
- *   - optionally a Tilt-compatible iBeacon so Tilt receivers and apps see it.
+ * Every measure_s seconds the pill wakes the accelerometer and averages a
+ * burst of readings. Every adv_ms milliseconds it broadcasts its ID and the
+ * latest raw reading (acceleration, die temperature, supply) as "BrewPill"
+ * manufacturer data. Tilt, gravity and the temperature correction are computed by the
+ * receiver (the gateway or BrewPill.app), which holds the calibration.
  * In between it sleeps on the 32 kHz clock with everything else powered down.
  */
 #include <math.h>
@@ -22,11 +21,6 @@ static const struct config defaults = {
     .magic       = CONFIG_MAGIC,
     .measure_s   = 60,
     .adv_ms      = 2000,
-    .axis        = 0,
-    .tilt_color  = 1,
-    .temp_offset = 0,
-    /* Placeholder until calibrated: 25° → 1.000, 75° → 1.100 */
-    .poly        = { 0.950f, 0.002f, 0.0f, 0.0f },
 };
 
 /* Latest reading; the host reads this over SWD (tools/status.py) */
@@ -34,13 +28,11 @@ struct status {
     uint32_t magic;
     uint32_t measurements;
     uint32_t broadcasts;
-    uint8_t  accel_ok, lfxo, calibrated, axis;
+    uint8_t  accel_ok, lfxo, configured, pad0;
     int16_t  x_mg, y_mg, z_mg;
-    int16_t  temp_c100;
-    uint16_t tilt_c100;
+    int16_t  temp_c100;               /* raw die temperature, no correction */
     uint16_t vdd_mv;
-    uint16_t sg_x10000;
-    uint16_t pad;
+    uint16_t pad1;
 };
 volatile struct status S;
 
@@ -152,7 +144,7 @@ static float die_temp_c(void)
     while (!TEMP_EVENTS_DATARDY);
     int32_t t = (int32_t)TEMP_TEMP;           /* 0.25 °C steps */
     TEMP_TASKS_STOP = 1;
-    return t * 0.25f + cfg->temp_offset / 100.0f;
+    return t * 0.25f;
 }
 
 static uint16_t vdd_mv(void)
@@ -173,14 +165,9 @@ static void measure(void)
     float g[3];
     S.accel_ok = lis3dh_read(g);
     if (S.accel_ok) {
-        /* Angle between the capsule's long axis and vertical */
-        int a = cfg->axis, b = (a + 1) % 3, c = (a + 2) % 3;
-        float tilt = atan2f(sqrtf(g[b] * g[b] + g[c] * g[c]), fabsf(g[a])) * (180.0f / 3.14159265f);
-        const float *p = cfg->poly;
-        float sg = p[0] + tilt * (p[1] + tilt * (p[2] + tilt * p[3]));
-        S.x_mg = g[0] * 1000; S.y_mg = g[1] * 1000; S.z_mg = g[2] * 1000;
-        S.tilt_c100 = tilt * 100 + 0.5f;
-        S.sg_x10000 = sg > 0 ? sg * 10000 + 0.5f : 0;
+        S.x_mg = lroundf(g[0] * 1000);
+        S.y_mg = lroundf(g[1] * 1000);
+        S.z_mg = lroundf(g[2] * 1000);
     }
     S.temp_c100 = lroundf(die_temp_c() * 100);
     S.vdd_mv = vdd_mv();
@@ -200,37 +187,18 @@ static int brewpill_packet(uint8_t *p)
 
     p[n++] = 3 + 16; p[n++] = 0xFF;           /* manufacturer data */
     n += put16(&p[n], 0xFFFF);                /* no company ID (test/DIY) */
-    p[n++] = 1;                               /* payload version */
-    p[n++] = (S.accel_ok << 0) | (S.calibrated << 1) | (S.lfxo << 2);
-    n += put16(&p[n], S.tilt_c100);
+    p[n++] = 2;                               /* payload version: raw readings */
+    p[n++] = (S.accel_ok << 0) | (S.lfxo << 2);
+    /* Pill ID: the address's low 4 bytes in display order, so it matches the
+     * end of the MAC. macOS hides MACs, so the app keys calibrations by this. */
+    const uint8_t *addr = radio_address();
+    for (int i = 3; i >= 0; i--) p[n++] = addr[i];
     n += put16(&p[n], S.temp_c100);
     n += put16(&p[n], S.vdd_mv);
-    n += put16(&p[n], S.sg_x10000);
     n += put16(&p[n], S.x_mg);
     n += put16(&p[n], S.y_mg);
     n += put16(&p[n], S.z_mg);
     return n;                                 /* 30 bytes */
-}
-
-/* Tilt hydrometer iBeacon: major = °F, minor = SG × 1000 */
-static int tilt_packet(uint8_t *p)
-{
-    static const uint8_t uuid[16] = {
-        0xA4, 0x95, 0xBB, 0x00, 0xC5, 0xB1, 0x4B, 0x44,
-        0xB5, 0x12, 0x13, 0x70, 0xF0, 0x2D, 0x74, 0xDE,
-    };
-    int n = 0;
-    p[n++] = 2; p[n++] = 0x01; p[n++] = 0x04;                 /* flags */
-    p[n++] = 26; p[n++] = 0xFF; p[n++] = 0x4C; p[n++] = 0x00; /* iBeacon */
-    p[n++] = 0x02; p[n++] = 0x15;
-    for (int i = 0; i < 16; i++) p[n++] = uuid[i];
-    p[3 + 6 + 3] = cfg->tilt_color << 4;                      /* A495BBx0 */
-    uint16_t f = lroundf(S.temp_c100 * 0.018f + 32);
-    uint16_t sg = (S.sg_x10000 + 5) / 10;
-    p[n++] = f >> 8;  p[n++] = f;
-    p[n++] = sg >> 8; p[n++] = sg;
-    p[n++] = (uint8_t)-59;                                    /* RSSI at 1 m */
-    return n;                                                 /* 30 bytes */
 }
 
 static void broadcast(void)
@@ -238,10 +206,6 @@ static void broadcast(void)
     uint8_t buf[31];
     hfxo(1);
     radio_advertise(buf, brewpill_packet(buf));
-    /* Tilt receivers can't see the status flags, so only send gravity that
-     * is both current and calibrated rather than 0, stale or placeholder SG */
-    if (cfg->tilt_color >= 1 && cfg->tilt_color <= 8 && S.accel_ok && S.calibrated)
-        radio_advertise(buf, tilt_packet(buf));
     hfxo(0);
     S.broadcasts++;
 }
@@ -249,9 +213,8 @@ static void broadcast(void)
 int main(void)
 {
     S.magic = STATUS_MAGIC;
-    S.calibrated = CONFIG->magic == CONFIG_MAGIC;
-    cfg = S.calibrated ? CONFIG : &defaults;
-    S.axis = cfg->axis;
+    S.configured = CONFIG->magic == CONFIG_MAGIC;
+    cfg = S.configured ? CONFIG : &defaults;
 
     lfclk_start();
     i2c_init();

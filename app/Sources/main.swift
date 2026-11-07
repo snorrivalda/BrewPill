@@ -21,13 +21,14 @@ let dataDir: URL = {
 struct Reading {
     var t: Double           // unix seconds
     var device: String
-    var tilt: Double        // as computed on the pill
-    var temp: Double        // °C, as reported by the pill
+    var tilt: Double        // as computed on a v1 pill; 0 from v2 pills (the dashboard computes it)
+    var temp: Double        // °C, as reported by the pill (raw die temperature from v2 pills)
     var vdd: Int            // mV
-    var sg: Double          // as computed on the pill
+    var sg: Double          // as computed on a v1 pill; 0 from v2 pills
     var rssi: Int
     var x: Int, y: Int, z: Int   // mg
     var flags: Int
+    var pillId = ""         // from the broadcast; not logged to CSV
 
     static let csvHeader = "t,device,tilt,temp,vdd,sg,rssi,x,y,z,flags\n"
 
@@ -52,7 +53,7 @@ struct Reading {
 
     var json: [String: Any] {
         ["t": t, "device": device, "tilt": tilt, "temp": temp, "vdd": vdd, "sg": sg,
-         "rssi": rssi, "x": x, "y": y, "z": z, "flags": flags]
+         "rssi": rssi, "x": x, "y": y, "z": z, "flags": flags, "pillId": pillId]
     }
 
     var row: [Any] { [t, tilt, temp, vdd, sg, rssi, x, y, z, flags] }
@@ -125,16 +126,18 @@ final class Scanner: NSObject, CBCentralManagerDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
                         advertisementData ad: [String: Any], rssi: NSNumber) {
-        // Manufacturer data: company 0xFFFF, version 1, then the payload from main.c
+        // Manufacturer data: company 0xFFFF, version 2, then the payload from main.c:
+        // flags, pill ID (4 bytes), raw die temperature, supply, x/y/z mg
         guard let d = ad[CBAdvertisementDataManufacturerDataKey] as? Data, d.count >= 18 else { return }
         let b = [UInt8](d)
-        guard b[0] == 0xFF, b[1] == 0xFF, b[2] == 1 else { return }
+        guard b[0] == 0xFF, b[1] == 0xFF, b[2] == 2 else { return }
         func u16(_ i: Int) -> Int { Int(b[i]) | Int(b[i + 1]) << 8 }
         func s16(_ i: Int) -> Int { Int(Int16(bitPattern: UInt16(u16(i)))) }
-        store.add(Reading(t: Date().timeIntervalSince1970, device: p.identifier.uuidString,
-                          tilt: Double(u16(4)) / 100, temp: Double(s16(6)) / 100, vdd: u16(8),
-                          sg: Double(u16(10)) / 10000, rssi: rssi.intValue,
-                          x: s16(12), y: s16(14), z: s16(16), flags: Int(b[3])))
+        var r = Reading(t: Date().timeIntervalSince1970, device: p.identifier.uuidString,
+                        tilt: 0, temp: Double(s16(8)) / 100, vdd: u16(10), sg: 0, rssi: rssi.intValue,
+                        x: s16(12), y: s16(14), z: s16(16), flags: Int(b[3]))
+        r.pillId = b[4..<8].map { String(format: "%02X", $0) }.joined()
+        store.add(r)
     }
 }
 
@@ -143,18 +146,14 @@ final class Scanner: NSObject, CBCentralManagerDelegate {
 enum PillWriter {
     static let openocd = NSHomeDirectory() + "/.platformio/packages/tool-openocd"
 
-    /// Same layout as struct config in brewpill/config.h
+    /// Same layout as struct config in brewpill/config.h (intervals only;
+    /// calibration lives on the gateway)
     static func blob(_ req: [String: Any]) -> Data {
         var d = Data()
         func put<T: FixedWidthInteger>(_ v: T) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
-        let poly = (req["poly"] as? [Double] ?? []) + [0, 0, 0, 0]
         put(UInt32(0x31435042))
         put(UInt16(clamping: req["measure"] as? Int ?? 60))
         put(UInt16(clamping: req["adv"] as? Int ?? 2000))
-        put(UInt8(clamping: req["axis"] as? Int ?? 0))
-        put(UInt8(clamping: req["color"] as? Int ?? 1))
-        put(Int16(clamping: Int((((req["tempOffset"] as? Double) ?? 0) * 100).rounded())))
-        for p in poly.prefix(4) { put(Float(p).bitPattern) }
         return d
     }
 
@@ -181,6 +180,38 @@ enum PillWriter {
             }
             DispatchQueue.main.async { done(ok, out) }
         }
+    }
+}
+
+// MARK: - Sending calibration to the gateway
+
+enum GatewayWriter {
+    /// Form POST to the gateway's /api/cal (see gateway/src/main.cpp handleCalPost)
+    static func send(_ req: [String: Any], done: @escaping (Bool, String) -> Void) {
+        let host = (req["host"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        let ok = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:")
+        guard !host.isEmpty, host.unicodeScalars.allSatisfy(ok.contains),
+              let url = URL(string: "http://\(host)/api/cal") else { return done(false, "Bad gateway address") }
+        guard let device = req["device"] as? String, !device.isEmpty else {
+            return done(false, "No pill ID yet: wait for a broadcast from the pill")
+        }
+        guard let fit = req["poly"] as? [Double], fit.count >= 2 else { return done(false, "No calibration curve") }
+        let poly = fit + [0, 0, 0, 0]
+        var fields = ["device": device, "axis": String(req["axis"] as? Int ?? 0),
+                      "temp_offset": String(req["tempOffset"] as? Double ?? 0)]
+        for (i, p) in poly.prefix(4).enumerated() { fields["p\(i)"] = String(p) }
+        var form = URLComponents()
+        form.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
+        var r = URLRequest(url: url, timeoutInterval: 10)
+        r.httpMethod = "POST"
+        r.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        r.httpBody = Data((form.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)
+        URLSession.shared.dataTask(with: r) { data, resp, error in
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let text = error.map { "Could not reach \(host): \($0.localizedDescription)" }
+                ?? String(decoding: data ?? Data(), as: UTF8.self)
+            DispatchQueue.main.async { done(code == 200, text) }
+        }.resume()
     }
 }
 
@@ -256,6 +287,17 @@ final class Server {
         (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
     }
 
+    /// JSON request in, {"ok", "output"} out, for jobs that report success and a log
+    private func runJob(_ r: Request, _ job: ([String: Any], @escaping (Bool, String) -> Void) -> Void,
+                        _ reply: @escaping (Int, String, Data) -> Void) {
+        guard let req = (try? JSONSerialization.jsonObject(with: r.body)) as? [String: Any] else {
+            return reply(400, "text/plain", Data("Expected a JSON object".utf8))
+        }
+        job(req) { [weak self] ok, out in
+            reply(200, "application/json", self?.json(["ok": ok, "output": String(out.suffix(1500))]) ?? Data())
+        }
+    }
+
     private func handle(_ r: Request, reply: @escaping (Int, String, Data) -> Void) {
         let jsonType = "application/json"
         // Refuse other websites: the Host must be ours (DNS rebinding), and writes
@@ -301,12 +343,10 @@ final class Server {
             reply(200, jsonType, json(["ok": true]))
 
         case ("POST", "/api/write-pill"):
-            guard let req = (try? JSONSerialization.jsonObject(with: r.body)) as? [String: Any] else {
-                return reply(400, "text/plain", Data("Expected a JSON object".utf8))
-            }
-            PillWriter.write(req) { [weak self] ok, out in
-                reply(200, jsonType, self?.json(["ok": ok, "output": String(out.suffix(1500))]) ?? Data())
-            }
+            runJob(r, PillWriter.write, reply)
+
+        case ("POST", "/api/gateway-cal"):
+            runJob(r, GatewayWriter.send, reply)
 
         default:
             reply(404, "text/plain", Data("Not found".utf8))

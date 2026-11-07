@@ -1,7 +1,10 @@
 /*
  * BrewPill gateway (ESP32).
  *
- * Listens for Brew Pill BLE broadcasts and forwards each pill's latest reading:
+ * Listens for Brew Pill BLE broadcasts (raw acceleration, temperature and
+ * supply), turns them into tilt, gravity and corrected temperature with each
+ * pill's calibration (sent from BrewPill.app to POST /api/cal, kept in flash
+ * and keyed by the pill ID in the broadcast), and forwards each pill's latest reading:
  *   - to Brewfather's Custom Stream (at most every 15 minutes, their limit),
  *   - to any JSON webhook (every N seconds).
  *
@@ -22,6 +25,8 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <map>
+#include <vector>
+#include <math.h>
 
 static const char *AP_SSID = "BrewPill-Setup";
 static const char *AP_PASS = "brewpill";            // WPA2 needs 8+ characters
@@ -36,12 +41,24 @@ struct Settings {
     uint32_t webhookEvery = 60;
 } cfg;
 
+/* Per-pill calibration. A pill without one uses the placeholder curve. */
+struct Cal {
+    uint8_t axis = 0;                         // capsule long axis: 0 = X, 1 = Y, 2 = Z
+    float poly[4] = {0.95f, 0.002f, 0, 0};    // SG = p0 + p1·t + p2·t² + p3·t³ (25° → 1.000, 75° → 1.100)
+    float tempOffset = 0;                     // °C added to the pill's die temperature
+};
+
+static std::map<String, Cal> cals;             // key: pill ID; guarded by pillsMutex
+
 struct Pill {
-    float tilt = 0, temp = 0, sg = 0;
+    String id;                                 // 8 hex digits from the payload = end of the MAC
+    float tilt = 0, temp = 0, sg = 0;          // computed with the pill's calibration
+    float rawTemp = 0;                         // die temperature as broadcast
     uint16_t vdd = 0;
     int16_t x = 0, y = 0, z = 0;
     int rssi = 0;
-    uint8_t flags = 0;
+    uint8_t flags = 0;                         // bit 0 accelerometer ok, bit 2 32 kHz crystal
+    bool calibrated = false;
     uint32_t seen = 0;               // millis() of the last broadcast
     uint32_t sentBF = 0, sentHook = 0;
     bool everBF = false, everHook = false;
@@ -85,26 +102,98 @@ static void saveSettings() {
     prefs.end();
 }
 
+// ---------- calibration ----------
+
+/* "DDEEFF01", "aa:bb:dd:ee:ff:01" or "aabbddeeff01" → "DDEEFF01"; "" if malformed */
+static String pillId(String s) {
+    s.replace(":", "");
+    s.trim();
+    s.toUpperCase();
+    if (s.length() == 12) s = s.substring(4);
+    if (s.length() != 8) return "";
+    for (char c : s) if (!isxdigit((unsigned char)c)) return "";
+    return s;
+}
+
+/* All calibrations live in one NVS blob, so a save replaces them in a single
+ * write: a reset mid-save keeps either the old set or the new one. */
+struct CalEntry {
+    char id[8];                                // pill ID, not NUL-terminated
+    Cal cal;
+};
+
+/* Called with pillsMutex held */
+static void loadCals() {
+    prefs.begin("cal", true);
+    size_t n = prefs.getBytesLength("all") / sizeof(CalEntry);
+    std::vector<CalEntry> all(n);
+    if (n && prefs.getBytes("all", all.data(), n * sizeof(CalEntry)) == n * sizeof(CalEntry))
+        for (auto &e : all) if (e.cal.axis < 3) cals[String(e.id, sizeof e.id)] = e.cal;
+    prefs.end();
+}
+
+/* Takes a snapshot so the flash write doesn't hold pillsMutex */
+static void saveCals(const std::map<String, Cal> &snap) {
+    std::vector<CalEntry> all;
+    for (auto &kv : snap) {
+        CalEntry e;
+        memcpy(e.id, kv.first.c_str(), sizeof e.id);
+        e.cal = kv.second;
+        all.push_back(e);
+    }
+    prefs.begin("cal", false);
+    if (all.empty()) prefs.remove("all");
+    else prefs.putBytes("all", all.data(), all.size() * sizeof(CalEntry));
+    prefs.end();
+}
+
+static std::map<String, Cal> calSnapshot() {
+    LOCK();
+    std::map<String, Cal> snap = cals;
+    UNLOCK();
+    return snap;
+}
+
+/* Tilt of the capsule's long axis from vertical, then gravity from the curve.
+ * Same maths as tiltOf()/polyEval() in app/web/index.html. */
+static void applyCal(Pill &p, const Cal &c) {
+    float g[3] = {(float)p.x, (float)p.y, (float)p.z};
+    int a = c.axis, b = (a + 1) % 3, d = (a + 2) % 3;
+    p.tilt = atan2f(hypotf(g[b], g[d]), fabsf(g[a])) * (180.0f / (float)M_PI);
+    const float *k = c.poly;
+    p.sg = k[0] + p.tilt * (k[1] + p.tilt * (k[2] + p.tilt * k[3]));
+    p.temp = p.rawTemp + c.tempOffset;
+}
+
+/* Called with pillsMutex held: recompute with the pill's current calibration */
+static void reapply(Pill &p) {
+    auto c = cals.find(p.id);
+    p.calibrated = c != cals.end();
+    applyCal(p, p.calibrated ? c->second : Cal());
+}
+
 // ---------- BLE ----------
 
 class PillScanner : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice dev) override {
         if (!dev.haveManufacturerData()) return;
         std::string d = dev.getManufacturerData();
-        // Company 0xFFFF, payload version 1 (see brewpill/main.c brewpill_packet)
-        if (d.size() < 18 || (uint8_t)d[0] != 0xFF || (uint8_t)d[1] != 0xFF || d[2] != 1) return;
+        // Company 0xFFFF, payload version 2: ID and raw readings (see brewpill/main.c brewpill_packet)
+        if (d.size() < 18 || (uint8_t)d[0] != 0xFF || (uint8_t)d[1] != 0xFF || d[2] != 2) return;
         auto u16 = [&](int i) { return (uint16_t)((uint8_t)d[i] | (uint8_t)d[i + 1] << 8); };
         String key = dev.getAddress().toString().c_str();
         LOCK();
         Pill &p = pills[key];
         p.flags = d[3];
-        p.tilt = u16(4) / 100.0f;
-        p.temp = (int16_t)u16(6) / 100.0f;
-        p.vdd = u16(8);
-        p.sg = u16(10) / 10000.0f;
+        char id[9];
+        snprintf(id, sizeof id, "%02X%02X%02X%02X", (uint8_t)d[4], (uint8_t)d[5], (uint8_t)d[6], (uint8_t)d[7]);
+        p.id = id;
+        p.rawTemp = (int16_t)u16(8) / 100.0f;
+        p.vdd = u16(10);
         p.x = u16(12); p.y = u16(14); p.z = u16(16);
         p.rssi = dev.getRSSI();
         p.seen = millis();
+        reapply(p);
         UNLOCK();
     }
 };
@@ -157,13 +246,13 @@ static int post(const String &url, const String &json, String &reply, const Stri
 static String pillName(const String &key) { return cfg.name + "-" + shortId(key); }
 
 static String hookJson(const String &key, const Pill &p, uint32_t now, bool test = false) {
-    char json[420];
+    char json[460];
     snprintf(json, sizeof json,
-        "{\"device\":\"%s\",\"name\":\"%s\",\"sg\":%.4f,\"tilt\":%.2f,\"temp_c\":%.2f,"
+        "{\"device\":\"%s\",\"pill_id\":\"%s\",\"name\":\"%s\",\"sg\":%.4f,\"tilt\":%.2f,\"temp_c\":%.2f,"
         "\"vdd_mv\":%u,\"rssi\":%d,\"x_mg\":%d,\"y_mg\":%d,\"z_mg\":%d,"
         "\"calibrated\":%s,\"age_s\":%lu%s}",
-        key.c_str(), pillName(key).c_str(), p.sg, p.tilt, p.temp, p.vdd, p.rssi,
-        p.x, p.y, p.z, (p.flags & 2) ? "true" : "false",
+        key.c_str(), p.id.c_str(), pillName(key).c_str(), p.sg, p.tilt, p.temp, p.vdd, p.rssi,
+        p.x, p.y, p.z, p.calibrated ? "true" : "false",
         (unsigned long)((now - p.seen) / 1000), test ? ",\"test\":true" : "");
     return json;
 }
@@ -207,7 +296,7 @@ static void forward() {
         const Pill &p = kv.second;
         if (now - p.seen > STALE_S * 1000) continue;
         String name = pillName(key);
-        bool calibrated = p.flags & 2;
+        bool calibrated = p.calibrated;
         String status;
 
         if (cfg.brewfather.length() && (!p.everBF || now - p.sentBF >= BREWFATHER_MIN_S * 1000)) {
@@ -217,7 +306,7 @@ static void forward() {
                 "\"gravity_unit\":\"G\",\"angle\":%.2f,\"battery\":%.2f,\"rssi\":%d,"
                 "\"comment\":\"%s\"}",
                 name.c_str(), p.temp, p.sg, p.tilt, p.vdd / 1000.0f, p.rssi,
-                calibrated ? "" : "pill uncalibrated");
+                calibrated ? "" : "uncalibrated: send from BrewPill.app");
             String reply;
             int code = post(cfg.brewfather, json, reply);
             status = String(code) + " " + reply;
@@ -325,10 +414,27 @@ static void handleRoot() {
         char line[220];
         snprintf(line, sizeof line, "SG %.4f · %.1f °C · tilt %.1f° · %.2f V · %d dBm · %lus ago",
                  p.sg, p.temp, p.tilt, p.vdd / 1000.0f, p.rssi, (unsigned long)((millis() - p.seen) / 1000));
-        h += "<p><b>" + esc(pillName(kv.first)) + "</b>";
-        if (!(p.flags & 2)) h += F(" <small>(uncalibrated: use “Write to pill” in BrewPill.app)</small>");
+        h += "<p><b>" + esc(pillName(kv.first)) + "</b> <small>ID " + esc(p.id) + "</small>";
+        if (!p.calibrated) h += F(" <small>(uncalibrated: use “Send to gateway” in BrewPill.app)</small>");
+        if (!(p.flags & 1)) h += F(" <small>(accelerometer not responding)</small>");
         h += "<br>" + String(line);
         h += "<br><small>Brewfather: " + esc(p.lastBF) + "<br>Webhook: " + esc(p.lastHook) + "</small></p>";
+    }
+    h += F("</div>");
+
+    std::map<String, Cal> calSnap = calSnapshot();
+    h += F("<div class=card><h2>Calibration</h2>");
+    if (calSnap.empty()) h += F("<small>None stored. Calibrate in BrewPill.app and use “Send to gateway”.</small>");
+    for (auto &kv : calSnap) {
+        const Cal &c = kv.second;
+        char line[200];
+        snprintf(line, sizeof line, "%c axis · SG = %.6g + %.6g·t + %.6g·t² + %.6g·t³ · temp %+.2f °C",
+                 "XYZ"[c.axis], c.poly[0], c.poly[1], c.poly[2], c.poly[3], c.tempOffset);
+        h += "<form method=post action=/api/cal style='margin:8px 0'><b>Pill " + esc(kv.first) +
+             "</b><br><small>" + String(line) + "</small>"
+             "<input type=hidden name=device value=\"" + esc(kv.first) + "\">"
+             "<input type=hidden name=delete value=1><input type=hidden name=page value=1>"
+             "<button style='margin-top:6px;background:#a33'>Remove</button></form>";
     }
     h += F("</div>");
 
@@ -395,6 +501,55 @@ static void handleTest() {
              "</code><br><br><a href=/>Back</a></body>");
 }
 
+static void sendJson(int code, const String &json) { web.send(code, "application/json", json); }
+
+static void calError(const char *msg) { sendJson(400, String("{\"ok\":false,\"error\":\"") + msg + "\"}"); }
+
+/* POST /api/cal: device (pill ID or MAC), axis (x/y/z or 0..2), p0..p3, temp_offset;
+ * or device + delete=1 */
+static void handleCalPost() {
+    String key = pillId(web.arg("device"));
+    if (!key.length()) return calError("device must be a pill ID (8 hex digits) or MAC");
+    bool del = web.arg("delete") == "1";
+    Cal c;
+    if (!del) {
+        String ax = web.arg("axis");
+        ax.toLowerCase();
+        int a = ax.length() == 1 ? String("xyz012").indexOf(ax[0]) : -1;
+        if (a < 0) return calError("axis must be x, y, z or 0-2");
+        if (!web.hasArg("p0") || !web.hasArg("p1")) return calError("p0 and p1 are required");
+        c.axis = a % 3;
+        for (int i = 0; i < 4; i++) c.poly[i] = web.arg("p" + String(i)).toFloat();   // missing → 0
+        c.tempOffset = web.arg("temp_offset").toFloat();
+        for (float v : c.poly) if (!isfinite(v)) return calError("bad coefficient");
+        if (!isfinite(c.tempOffset)) return calError("bad temp_offset");
+    }
+    LOCK();
+    if (del) cals.erase(key); else cals[key] = c;
+    for (auto &kv : pills) if (kv.second.id == key) reapply(kv.second);
+    std::map<String, Cal> snap = cals;
+    UNLOCK();
+    saveCals(snap);
+    Serial.printf("Calibration %s for %s\n", del ? "removed" : "stored", key.c_str());
+    if (web.hasArg("page")) { web.sendHeader("Location", "/"); web.send(303, "text/plain", ""); return; }
+    sendJson(200, "{\"ok\":true}");
+}
+
+/* GET /api/cal: every stored calibration */
+static void handleCalGet() {
+    std::map<String, Cal> snap = calSnapshot();
+    String j = "{";
+    for (auto &kv : snap) {
+        const Cal &c = kv.second;
+        char item[200];
+        snprintf(item, sizeof item, "%s\"%s\":{\"axis\":%u,\"poly\":[%.9g,%.9g,%.9g,%.9g],\"temp_offset\":%.3f}",
+                 j.length() > 1 ? "," : "", kv.first.c_str(), c.axis,
+                 c.poly[0], c.poly[1], c.poly[2], c.poly[3], c.tempOffset);
+        j += item;
+    }
+    sendJson(200, j + "}");
+}
+
 /* One serial line per pill each minute, so reception can be checked over USB */
 static void logPills() {
     std::map<String, Pill> snap;
@@ -417,6 +572,10 @@ void setup() {
     Serial.println("\nBrewPill gateway");
     pillsMutex = xSemaphoreCreateMutex();
     loadSettings();
+    LOCK();
+    loadCals();
+    UNLOCK();
+    Serial.printf("%u pill calibration(s) stored\n", (unsigned)cals.size());
     offlineSince = 1;                            // so the first connection announces itself
 
     WiFi.setHostname(HOSTNAME);
@@ -427,6 +586,8 @@ void setup() {
     web.on("/", HTTP_GET, handleRoot);
     web.on("/save", HTTP_POST, handleSave);
     web.on("/test", HTTP_POST, handleTest);
+    web.on("/api/cal", HTTP_POST, handleCalPost);
+    web.on("/api/cal", HTTP_GET, handleCalGet);
     web.onNotFound([] {
         if (!apOn) { web.send(404, "text/plain", "Not found"); return; }
         web.sendHeader("Location", "http://192.168.4.1/");   // captive portal: everything → setup

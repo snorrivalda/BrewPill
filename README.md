@@ -20,10 +20,12 @@ The app window shows the dashboard; it is also at <http://localhost:8088> in any
 browser on this Mac (menu: BrewPill > Open Dashboard in Browser). Readings and
 settings live in `~/Library/Application Support/BrewPill/`.
 
-The app recalculates tilt and gravity from the raw X/Y/Z in each broadcast, so
-the capsule axis, calibration and temperature offset can all be set from the
-Calibrate tab with the pill sealed. "Write to pill" is only needed for
-Tilt-compatible receivers and requires the ST-Link.
+The pill broadcasts raw readings only: its ID, acceleration (X/Y/Z), die
+temperature and supply voltage. The app and the gateway compute tilt, gravity
+and corrected temperature themselves, so the capsule axis, calibration and
+temperature offset are all set from the Calibrate tab with the pill sealed.
+**Send to gateway** copies them to the gateway. The ST-Link is only needed to
+change the pill's measurement interval ("Write to pill" or `tools/config.py`).
 
 Hardware notes: LIS3DH on I2C P0.06 (SDA) / P0.07 (SCL) at 0x19; 16 MHz and
 32.768 kHz crystals; the nRF51 needs ≤ 3.6 V, so put an LDO between a LiPo and the board.
@@ -42,8 +44,13 @@ secret, sent as `Authorization: Bearer <secret>`. Afterwards the
 status and settings page is at http://brewpill-gw.local. If the gateway is offline
 for a minute, the setup network opens again.
 
-The gateway forwards the gravity the pill computes, so calibrate in BrewPill.app
-and then use **Write to pill** (ST-Link) so Brewfather gets calibrated values.
+The gateway stores a calibration per pill (keyed by the pill ID in each
+broadcast, the last 8 hex digits of its Bluetooth address) and computes the
+gravity it forwards. Calibrate in BrewPill.app and press **Send to gateway**.
+Until then the pill is reported as uncalibrated, with gravity from a placeholder
+curve. Stored calibrations are listed on the status page, and are also at
+`GET /api/cal`. `POST /api/cal` takes form fields `device`, `axis` (x/y/z),
+`p0`..`p3` and `temp_offset`, or `device` with `delete=1`.
 Brewfather accepts one reading per 15 minutes; the webhook interval is configurable.
 To check a webhook, press **Send test webhook** on the status page (or type `t` in
 the serial monitor). It posts one reading marked `"test": true`, using the latest
