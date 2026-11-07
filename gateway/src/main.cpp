@@ -26,6 +26,7 @@
 static const char *AP_SSID = "BrewPill-Setup";
 static const char *AP_PASS = "brewpill";            // WPA2 needs 8+ characters
 static const char *HOSTNAME = "brewpill-gw";
+static const char *DEFAULT_WEBHOOK = "https://bruko.net/api/brewpill";   // used until settings are first saved
 static const uint32_t BREWFATHER_MIN_S = 15 * 60;   // Brewfather rejects faster posts
 static const uint32_t STALE_S = 180;                // don't forward readings older than this
 static const uint32_t AP_AFTER_S = 60;              // open setup network after this long offline
@@ -65,7 +66,7 @@ static void loadSettings() {
     cfg.ssid = prefs.getString("ssid", "");
     cfg.pass = prefs.getString("pass", "");
     cfg.brewfather = prefs.getString("bf", "");
-    cfg.webhook = prefs.getString("hook", "");
+    cfg.webhook = prefs.getString("hook", DEFAULT_WEBHOOK);
     cfg.webhookSecret = prefs.getString("hookKey", "");
     cfg.name = prefs.getString("name", "BrewPill");
     cfg.webhookEvery = prefs.getUInt("hookEvery", 60);

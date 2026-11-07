@@ -36,8 +36,9 @@ cd gateway && ~/.platformio/penv/bin/pio run -t upload
 
 On first boot it opens the Wi-Fi network **BrewPill-Setup** (password `brewpill`).
 Join it from a phone; the setup page opens (or browse to http://192.168.4.1).
-Enter your Wi-Fi, Brewfather Custom Stream URL and/or webhook URL (with an optional
-secret, sent as `Authorization: Bearer <secret>`). Afterwards the
+Enter your Wi-Fi, Brewfather Custom Stream URL and/or webhook URL (pre-filled with
+`https://bruko.net/api/brewpill`; clear it to turn the webhook off) with an optional
+secret, sent as `Authorization: Bearer <secret>`. Afterwards the
 status and settings page is at http://brewpill-gw.local. If the gateway is offline
 for a minute, the setup network opens again.
 
