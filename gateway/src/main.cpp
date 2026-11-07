@@ -31,7 +31,7 @@ static const uint32_t STALE_S = 180;                // don't forward readings ol
 static const uint32_t AP_AFTER_S = 60;              // open setup network after this long offline
 
 struct Settings {
-    String ssid, pass, brewfather, webhook, name;
+    String ssid, pass, brewfather, webhook, webhookSecret, name;
     uint32_t webhookEvery = 60;
 } cfg;
 
@@ -66,6 +66,7 @@ static void loadSettings() {
     cfg.pass = prefs.getString("pass", "");
     cfg.brewfather = prefs.getString("bf", "");
     cfg.webhook = prefs.getString("hook", "");
+    cfg.webhookSecret = prefs.getString("hookKey", "");
     cfg.name = prefs.getString("name", "BrewPill");
     cfg.webhookEvery = prefs.getUInt("hookEvery", 60);
     prefs.end();
@@ -77,6 +78,7 @@ static void saveSettings() {
     prefs.putString("pass", cfg.pass);
     prefs.putString("bf", cfg.brewfather);
     prefs.putString("hook", cfg.webhook);
+    prefs.putString("hookKey", cfg.webhookSecret);
     prefs.putString("name", cfg.name);
     prefs.putUInt("hookEvery", cfg.webhookEvery);
     prefs.end();
@@ -134,7 +136,7 @@ static String shortId(const String &key) {
     return s;
 }
 
-static int post(const String &url, const String &json, String &reply) {
+static int post(const String &url, const String &json, String &reply, const String &bearer = "") {
     HTTPClient http;
     WiFiClientSecure tls;
     WiFiClient plain;
@@ -144,6 +146,7 @@ static int post(const String &url, const String &json, String &reply) {
     if (!ok) { reply = "bad URL"; return -1; }
     http.setTimeout(8000);
     http.addHeader("Content-Type", "application/json");
+    if (bearer.length()) http.addHeader("Authorization", "Bearer " + bearer);
     int code = http.POST(json);
     reply = code > 0 ? http.getString().substring(0, 120) : http.errorToString(code);
     http.end();
@@ -194,7 +197,7 @@ static void forward() {
                 p.x, p.y, p.z, calibrated ? "true" : "false",
                 (unsigned long)((now - p.seen) / 1000));
             String reply;
-            int code = post(cfg.webhook, json, reply);
+            int code = post(cfg.webhook, json, reply, cfg.webhookSecret);
             status = String(code) + " " + reply;
             Serial.printf("Webhook %s: %s\n", name.c_str(), status.c_str());
             LOCK();
@@ -307,7 +310,12 @@ static void handleRoot() {
     h += F("\"><label>Webhook URL <small>(receives JSON with sg, tilt, temp_c…; blank = off)</small></label>"
            "<input name=hook placeholder='https://example.com/brewpill' value=\"");
     h += esc(cfg.webhook);
-    h += F("\"><label>Webhook interval, seconds</label><input name=every type=number min=10 value=\"");
+    h += F("\"><label>Webhook secret <small>(sent as <code>Authorization: Bearer …</code>; ");
+    h += cfg.webhookSecret.length() ? F("one is saved; blank keeps it)") : F("none saved; blank = none)");
+    h += F("</small></label><input name=hookKey type=password autocomplete=new-password>");
+    if (cfg.webhookSecret.length())
+        h += F("<label><input type=checkbox name=hookKeyClear style='width:auto'> Remove the saved secret</label>");
+    h += F("<label>Webhook interval, seconds</label><input name=every type=number min=10 value=\"");
     h += String(cfg.webhookEvery);
     h += F("\"><label>Name in Brewfather / webhook</label><input name=name value=\"");
     h += esc(cfg.name);
@@ -321,6 +329,13 @@ static void handleSave() {
     if (web.arg("pass").length()) cfg.pass = web.arg("pass");
     cfg.brewfather = web.arg("bf"); cfg.brewfather.trim();
     cfg.webhook = web.arg("hook"); cfg.webhook.trim();
+    if (web.hasArg("hookKeyClear")) cfg.webhookSecret = "";
+    else {
+        String k = web.arg("hookKey");
+        k.replace("\r", ""); k.replace("\n", "");   // keep it from splitting the Authorization header
+        k.trim();
+        if (k.length()) cfg.webhookSecret = k;
+    }
     cfg.name = web.arg("name"); cfg.name.trim();
     if (!cfg.name.length()) cfg.name = "BrewPill";
     cfg.webhookEvery = max(10L, web.arg("every").toInt());
