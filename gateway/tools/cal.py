@@ -8,7 +8,7 @@
 FILE is JSON in the same shape as GET /api/cal:
   {"A2A62E61": {"axis": 1, "poly": [p0, p1, p2, p3], "temp_offset": 0.5}}
 Saved from the app, each entry also has "degree" and "points" (tilt, sg, brix, wcf,
-t = Unix time), the measurements the curve was fitted to.
+t = Unix time, and manual / edited / off flags), the measurements the curve was fitted to.
 GATEWAY is a host name or address, e.g. brewpill-gw.local or 192.168.1.216.
 """
 import json
@@ -33,7 +33,7 @@ def from_app():
         sys.exit("BrewPill.app isn't hearing the selected pill, so its pill ID is unknown")
     poly = (list(state["poly"]) + [0, 0, 0, 0])[:4]
     # The measurement points and curve degree ride along for the record; upload ignores them
-    points = [{k: p[k] for k in ("tilt", "sg", "brix", "wcf", "t") if k in p} for p in state.get("points", [])]
+    points = [{k: p[k] for k in ("tilt", "sg", "brix", "wcf", "t", "manual", "edited", "off") if k in p} for p in state.get("points", [])]
     return {ids[0]: {"axis": "xyz".index(state.get("axis", "x")), "poly": poly,
                      "temp_offset": state.get("tempOffset", 0),
                      "degree": state.get("degree"), "points": points}}

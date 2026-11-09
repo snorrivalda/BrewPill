@@ -87,6 +87,13 @@ button.btn { cursor: pointer; }
 button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.btn:disabled { opacity: 0.5; cursor: default; }
 input[type=number] { width: 100px; }
+#pointsTable { overflow-x: auto; }
+#pointsTable td { white-space: nowrap; }
+#pointsTable input[type=number] { width: 72px; padding: 3px 6px; text-align: right; }
+#pointsTable td:first-child, #pointsTable th:first-child { width: 1%; }
+#pointsTable tr.off td:not(:first-child) { opacity: 0.45; }
+#pointsTable .unit { color: var(--text-secondary); margin-left: 4px; }
+#pointsTable .mark { color: var(--text-secondary); margin-left: 4px; cursor: help; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; background: var(--field); color: var(--text-secondary); padding: 5px 10px; font: inherit; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--border); }
@@ -190,11 +197,13 @@ a { color: var(--accent); }
     <div class="grid2">
       <div class="panel">
         <h2>2 · Calibration points</h2>
-        <p class="hint">Float the pill in water and in 2–5 sugar solutions whose gravity you've measured with a hydrometer (SG) or refractometer (°Brix). Wait until the tilt settles (about 5 minutes; readings arrive once a minute), then add a point.</p>
+        <p class="hint">Float the pill in water and in 2–5 sugar solutions whose gravity you've measured with a hydrometer (SG) or refractometer (°Brix). Wait until the tilt settles (about 5 minutes; readings arrive once a minute), then add a point. To add a point by hand, type its tilt too. Edit any tilt or measurement in the table, and untick a point to leave it out of the fit.</p>
         <div class="row" style="margin-bottom:10px">
           <span>Tilt now: <strong id="calTilt">–</strong> <span class="badge" id="calSpread"></span></span>
         </div>
         <div class="row" style="margin-bottom:6px">
+          <label for="calTiltIn">Tilt</label>
+          <input type="number" id="calTiltIn" step="0.1" min="0" max="180" placeholder="live" style="width:80px" title="Leave blank to use the pill's live tilt">
           <label for="calSG">Measured</label>
           <input type="number" id="calSG" step="0.001" placeholder="1.000">
           <select id="calUnit" aria-label="Unit">
@@ -715,9 +724,25 @@ function renderCalibrateLive() {
   $("curOffset").textContent = `${(state.tempOffset || 0) >= 0 ? "+" : ""}${(state.tempOffset || 0).toFixed(1)} °C`;
 }
 
+/** Points that take part in the fit (unticked ones are kept but left out) */
+const usedPoints = () => state.points.filter((pt) => !pt.off);
+
 function currentFit() {
-  const deg = +$("degree").value;
-  return state.points.length > deg ? fit(state.points, deg) : null;
+  const deg = +$("degree").value, used = usedPoints();
+  return used.length > deg ? fit(used, deg) : null;
+}
+
+/** Number input for a cell of the points table; onSet returns an error string or nothing */
+function cellInput(value, step, onSet) {
+  const input = document.createElement("input");
+  input.type = "number"; input.step = step; input.value = value;
+  input.addEventListener("change", async () => {
+    const err = onSet(parseFloat(input.value));
+    if (err) { alert(err); renderCalibration(); return; }
+    state.points.sort((a, b) => a.tilt - b.tilt);
+    await saveState(); renderCalibration();
+  });
+  return input;
 }
 
 function renderCalibration() {
@@ -729,15 +754,51 @@ function renderCalibration() {
   } else {
     const t = document.createElement("table");
     const head = t.createTHead().insertRow();
-    for (const h of ["Tilt °", "Measured", "SG", "Fit", "Error", ""]) { const th = document.createElement("th"); th.textContent = h; head.appendChild(th); }
+    for (const h of ["Use", "Tilt °", "Measured", "SG", "Fit", "Error", ""]) { const th = document.createElement("th"); th.textContent = h; head.appendChild(th); }
     const body = t.createTBody();
     state.points.forEach((pt, i) => {
       const tr = body.insertRow();
+      if (pt.off) tr.className = "off";
       const est = p ? polyEval(p, pt.tilt) : null;
-      const measured = pt.brix != null ? `${pt.brix.toFixed(1)} °Bx${pt.wcf && pt.wcf !== 1 ? ` ÷ ${pt.wcf}` : ""}` : "SG";
-      for (const v of [pt.tilt.toFixed(2), measured, pt.sg.toFixed(3), est ? est.toFixed(4) : "–",
+
+      const use = document.createElement("input");
+      use.type = "checkbox"; use.checked = !pt.off; use.setAttribute("aria-label", "Use this point in the fit");
+      use.addEventListener("change", async () => { if (use.checked) delete pt.off; else pt.off = true; await saveState(); renderCalibration(); });
+      tr.insertCell().appendChild(use);
+
+      const tiltCell = tr.insertCell();
+      tiltCell.appendChild(cellInput(pt.tilt.toFixed(2), "0.01", (v) => {
+        if (!(v >= 0 && v <= 180)) return "Tilt must be between 0 and 180 degrees.";
+        pt.tilt = v; pt.edited = true;
+      }));
+      if (pt.manual || pt.edited) {
+        const m = document.createElement("span"); m.className = "mark"; m.textContent = "✎";
+        m.title = pt.manual ? "Tilt typed by hand" : "Edited by hand";
+        tiltCell.appendChild(m);
+      }
+
+      const measCell = tr.insertCell();
+      if (pt.brix != null) {
+        measCell.appendChild(cellInput(pt.brix.toFixed(1), "0.1", (v) => {
+          if (!(v >= 0 && v <= 40)) return "°Brix must be between 0 and 40.";
+          pt.brix = v; pt.sg = +brixToSG(v / (pt.wcf || 1)).toFixed(4); pt.edited = true;
+        }));
+        const u = document.createElement("span"); u.className = "unit";
+        u.textContent = `°Bx${pt.wcf && pt.wcf !== 1 ? ` ÷ ${pt.wcf}` : ""}`;
+        measCell.appendChild(u);
+      } else {
+        measCell.appendChild(cellInput(pt.sg.toFixed(4), "0.001", (v) => {
+          if (!(v > 0.98 && v < 1.2)) return "SG must be between 0.980 and 1.200.";
+          pt.sg = v; pt.edited = true;
+        }));
+        const u = document.createElement("span"); u.className = "unit"; u.textContent = "SG";
+        measCell.appendChild(u);
+      }
+
+      for (const v of [pt.sg.toFixed(4), est ? est.toFixed(4) : "–",
                        est ? ((est - pt.sg) * 1000).toFixed(1) + " pts" : "–"]) tr.insertCell().textContent = v;
-      const del = document.createElement("button"); del.className = "btn"; del.textContent = "Remove";
+      const del = document.createElement("button"); del.className = "btn"; del.textContent = "✕";
+      del.title = "Remove this point"; del.setAttribute("aria-label", "Remove this point");
       del.addEventListener("click", async () => { state.points.splice(i, 1); await saveState(); renderCalibration(); });
       tr.insertCell().appendChild(del);
     });
@@ -745,10 +806,12 @@ function renderCalibration() {
   }
   const deg = +$("degree").value;
   if (p) {
-    const rms = Math.sqrt(state.points.reduce((s, pt) => s + (polyEval(p, pt.tilt) - pt.sg) ** 2, 0) / state.points.length);
-    $("fitInfo").textContent = `RMS error ${(rms * 1000).toFixed(1)} pts`;
+    const used = usedPoints();
+    const rms = Math.sqrt(used.reduce((s, pt) => s + (polyEval(p, pt.tilt) - pt.sg) ** 2, 0) / used.length);
+    $("fitInfo").textContent = `RMS error ${(rms * 1000).toFixed(1)} pts` +
+      (used.length < state.points.length ? ` · ${used.length} of ${state.points.length} points used` : "");
   } else {
-    $("fitInfo").textContent = `needs ${deg + 1}+ points`;
+    $("fitInfo").textContent = `needs ${deg + 1}+ ticked points`;
   }
   $("saveCal").disabled = !p;
   $("calStatus").textContent = state.poly
@@ -790,13 +853,15 @@ function renderCalChart(p) {
   }
   const tip = $("calTooltip"), wrap = $("calChartWrap");
   for (const q of pts) {
-    const c = el("circle", { cx: X(q.tilt), cy: Y(q.sg), r: 5, fill: "var(--surface-1)", stroke: "var(--text-primary)", "stroke-width": 2 }, svg);
+    const c = el("circle", { cx: X(q.tilt), cy: Y(q.sg), r: 5, fill: "var(--surface-1)", stroke: q.off ? "var(--text-muted)" : "var(--text-primary)",
+                             "stroke-width": 2, ...(q.off ? { "stroke-dasharray": "2 2" } : {}) }, svg);
     const hit = el("circle", { cx: X(q.tilt), cy: Y(q.sg), r: 14, fill: "transparent" }, svg);
     hit.addEventListener("pointerenter", () => {
       c.setAttribute("r", 6);
       tip.replaceChildren();
       const lines = [[q.sg.toFixed(3), "measured SG"], [q.tilt.toFixed(2) + "°", "tilt"]];
       if (p) lines.push([((polyEval(p, q.tilt) - q.sg) * 1000).toFixed(1) + " pts", "fit error"]);
+      if (q.off) lines.push(["–", "not used in the fit"]);
       for (const [v, n] of lines) {
         const row = document.createElement("div"); row.className = "tt-row";
         const s = document.createElement("strong"); s.textContent = v;
@@ -875,13 +940,22 @@ $("wcf").addEventListener("input", syncUnit);
 syncUnit();
 
 $("addPoint").addEventListener("click", async () => {
-  const m = measuredInput(), rt = recentTilt();
-  if (!rt) return alert("No readings from the pill yet.");
+  const m = measuredInput();
   if (!m) return alert("Enter a measurement first.");
   if (typeof m === "string") return alert(m);
-  state.points.push({ tilt: +rt.mean.toFixed(3), ...m, t: Date.now() / 1000 });
+  const typed = $("calTiltIn").value.trim();
+  let tilt, manual = false;
+  if (typed) {
+    tilt = parseFloat(typed); manual = true;
+    if (!(tilt >= 0 && tilt <= 180)) return alert("Tilt must be between 0 and 180 degrees, or blank for the live tilt.");
+  } else {
+    const rt = recentTilt();
+    if (!rt) return alert("No readings from the pill yet. Type a tilt to add the point by hand.");
+    tilt = rt.mean;
+  }
+  state.points.push({ tilt: +tilt.toFixed(3), ...m, t: Date.now() / 1000, ...(manual ? { manual: true } : {}) });
   state.points.sort((a, b) => a.tilt - b.tilt);
-  $("calSG").value = "";
+  $("calSG").value = ""; $("calTiltIn").value = "";
   syncUnit();
   await saveState(); renderCalibration();
 });
